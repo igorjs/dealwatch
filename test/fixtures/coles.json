@@ -1,0 +1,34 @@
+{
+  "_placeholder": "PLACEHOLDER FIXTURE, HIGH UNCERTAINTY. The only Coles request captured so far is the GetProductCategories operation (plan Capture notes, 2026-07-31), NOT the half-price product-listing operation behind /on-special?filter_Special=halfprice. This models a best-effort guess at a Coles GraphQL product-search response shape (data.results.results[] + totalCount, product fields id/name/brand/pricing.now/pricing.was/seoToken/onlineHeirs[].category). Refine this fixture together with the Zod schema in src/sources/coles.ts once the real product-listing request/response is captured (see scripts/STORE-CAPTURE.md).",
+  "data": {
+    "results": {
+      "results": [
+        {
+          "id": 12345,
+          "name": "Tim Tam Original 200g",
+          "brand": "Arnott's",
+          "pricing": { "now": 2.5, "was": 5.0 },
+          "seoToken": "tim-tam-original-200g-12345",
+          "onlineHeirs": [{ "category": "Biscuits & Crackers" }]
+        },
+        {
+          "id": 67890,
+          "name": "Coles Full Cream Milk 3L",
+          "brand": "Coles",
+          "pricing": { "now": 3.5, "was": null },
+          "seoToken": "coles-full-cream-milk-3l-67890",
+          "onlineHeirs": [{ "category": "Dairy, Eggs & Fridge" }]
+        },
+        {
+          "id": 11111,
+          "name": "Mystery Bargain Item",
+          "brand": null,
+          "pricing": { "now": 1.0, "was": 2.0 },
+          "seoToken": "mystery-bargain-item-11111",
+          "onlineHeirs": []
+        }
+      ],
+      "totalCount": 3
+    }
+  }
+}
