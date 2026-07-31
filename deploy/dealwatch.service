@@ -1,0 +1,74 @@
+# dealwatch.service — runs ONE pipeline pass, then exits (Type=oneshot).
+# It is triggered on a schedule by dealwatch.timer; do not `systemctl
+# start --now` this as if it were a long-running daemon, and do not
+# `systemctl enable` it directly — only the timer is enabled (see
+# deploy/README.md).
+#
+# Install:
+#   sudo cp deploy/dealwatch.service /etc/systemd/system/
+#   sudo systemctl daemon-reload
+# Full setup (user creation, deno install, config.local.json, NTP check,
+# enabling the timer) is documented in deploy/README.md.
+
+[Unit]
+Description=Dealwatch: one supermarket half-price watch pass
+Documentation=file:///opt/dealwatch/deploy/README.md
+# Best-effort ordering only: pulls in network-online.target if the Pi
+# provides one (e.g. NetworkManager-wait-online, dhcpcd's wait hook). If it
+# doesn't, this has no effect — it does not block the unit from starting.
+# Belt-and-braces either way, since a failed run just retries on the next
+# timer tick (self-gating means most ticks are a no-op regardless).
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=oneshot
+
+# Dedicated, unprivileged user — must exist BEFORE this unit is started.
+# Create it first (see deploy/README.md):
+#   sudo useradd --system --home-dir /opt/dealwatch --shell /usr/sbin/nologin dealwatch
+#   sudo chown -R dealwatch:dealwatch /opt/dealwatch
+User=dealwatch
+Group=dealwatch
+
+# The app's install dir. The db defaults to ./dealwatch.db and
+# shopping-list.json / config.local.json also default to paths relative to
+# this cwd (see config.example.json, src/main.ts DEFAULT_CONFIG_PATH /
+# DEFAULT_DB_PATH) — though ExecStart below passes the config and db paths
+# explicitly, so those relative defaults aren't actually relied on here.
+WorkingDirectory=/opt/dealwatch
+
+# `env` resolves `deno` from PATH at exec time rather than a hard-coded
+# absolute path, because the install location varies by install method:
+#   - official install script (https://deno.land/install.sh): ~/.deno/bin/deno
+#   - some package managers / manual tarball installs: /usr/local/bin/deno
+#   - mise-managed installs (this repo ships an mise.toml pinning deno):
+#     a shim under ~/.local/share/mise/... or ~/.local/bin/deno
+# IMPORTANT: systemd services run with a MINIMAL PATH (typically
+# /usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin), which does
+# NOT include a user's ~/.deno/bin, ~/.local/bin, or an mise shim dir. Find
+# out where deno actually lives for the dealwatch user
+# (`sudo -u dealwatch -H sh -lc 'command -v deno'`) and either:
+#   (a) symlink it onto a system path (simplest, recommended):
+#         sudo ln -s "$(sudo -u dealwatch -H sh -lc 'command -v deno')" /usr/local/bin/deno
+#   (b) or uncomment and adjust the Environment=PATH line below, or
+#   (c) or replace `/usr/bin/env deno` in ExecStart with deno's absolute path.
+# See deploy/README.md for the walkthrough.
+# Environment=PATH=/home/dealwatch/.deno/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+
+# Config path first, db path second: main.ts reads Deno.args[0] as the
+# config path and Deno.args[1] as the db path (`if (import.meta.main) {
+# Deno.exit(await main({ configPath: Deno.args[0], dbPath: Deno.args[1] }))
+# }`). `deno task run` forwards trailing args straight through to
+# src/main.ts. config.local.json is the gitignored file holding the real
+# watchlist, ntfy topic, and captured store request profiles — it is never
+# committed to the repo; see deploy/README.md for how to create it.
+ExecStart=/usr/bin/env deno task run /opt/dealwatch/config.local.json /opt/dealwatch/dealwatch.db
+
+# Modest hardening; kept minimal on purpose (a single personal Pi, not a
+# fleet — see the plan's "reasonable hardening is optional" note).
+NoNewPrivileges=true
+PrivateTmp=true
+
+StandardOutput=journal
+StandardError=journal
