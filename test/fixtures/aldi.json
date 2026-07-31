@@ -1,0 +1,37 @@
+{
+  "_placeholder": "PLACEHOLDER FIXTURE. No real Aldi product-search response has been captured yet (plan Assumption 19 / Capture notes). This models the plausible shape of GET https://api.aldi.com.au/v3/product-search based on the captured request URL only. Refine this fixture together with the AldiPayloadSchema in src/sources/aldi.ts once a real response body is captured on the Pi (see scripts/STORE-CAPTURE.md).",
+  "data": [
+    {
+      "sku": "000000042000001",
+      "name": "Sourdough Vienna Loaf 660g",
+      "brandName": "Bakers Life",
+      "price": { "amount": 3.49, "wasAmount": null },
+      "urlSlugText": "bakers-life-sourdough-vienna-loaf-660g",
+      "categoryKey": "1588161426952145",
+      "categoryName": "Bakery"
+    },
+    {
+      "sku": "000000042000002",
+      "name": "Free Range Eggs 12 Pack",
+      "brandName": "Farm Fresh",
+      "price": { "amount": 4.99, "wasAmount": 6.49 },
+      "urlSlugText": "farm-fresh-free-range-eggs-12-pack",
+      "categoryKey": "1588161426952145",
+      "categoryName": "Dairy & Eggs"
+    },
+    {
+      "sku": "000000042000003",
+      "name": "Extra Virgin Olive Oil 1L",
+      "brandName": null,
+      "price": { "amount": 8.99, "wasAmount": null },
+      "urlSlugText": "extra-virgin-olive-oil-1l",
+      "categoryKey": "1588161420755352",
+      "categoryName": null
+    }
+  ],
+  "meta": {
+    "pagination": {
+      "totalCount": 3
+    }
+  }
+}
