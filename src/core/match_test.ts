@@ -70,6 +70,27 @@ Deno.test("watch term match is case-insensitive", () => {
   assertEquals(result, true);
 });
 
+Deno.test("watch term with non-ASCII letters matches at a Unicode word boundary", () => {
+  // Arrange
+  const watchlist: Watch[] = [
+    { term: "açaí", minDiscountPercent: 0, exclude: [] },
+    { term: "café", minDiscountPercent: 0, exclude: [] },
+  ];
+  const acaiDeal = makeDeal({ title: "Fresh Açaí Bowl 200g" });
+  const cafeDeal = makeDeal({ title: "Café Blend Ground Coffee 1kg" });
+  const midWordDeal = makeDeal({ title: "Uncafé mystery pack" });
+
+  // Act
+  const acaiResult = match(acaiDeal, watchlist);
+  const cafeResult = match(cafeDeal, watchlist);
+  const midWordResult = match(midWordDeal, watchlist);
+
+  // Assert
+  assertEquals(acaiResult, true);
+  assertEquals(cafeResult, true);
+  assertEquals(midWordResult, false);
+});
+
 Deno.test("deal discountPercent exactly at the watch floor matches", () => {
   // Arrange
   const watchlist: Watch[] = [{

@@ -172,15 +172,23 @@ function weekdayOf(date: CalendarDate): number {
  * treat the Y/M/D 00:00:00 numbers as if they were already UTC (a guess),
  * ask `Intl` what Sydney wall-clock that guessed instant displays as, and
  * use the difference between the guess and that read-back to correct it.
- * Midnight is never inside the AU DST transition's skipped/repeated hour
- * (which falls at 02:00-03:00 local), so a single correction is exact.
+ * The offset resolved here is always the one in effect for `date` itself,
+ * never for whatever date/offset `now` happens to be in when `dueSources` is
+ * evaluated. That distinction matters right at the DST boundary: `now` can be
+ * on one side of the transition while a scheduled boundary date sits on the
+ * other, a one-hour gap this method does not blur.
  *
- * Critically, the offset resolved here is always the one in effect for
- * `date` itself, never for whatever date/offset `now` happens to be in when
- * `dueSources` is evaluated. That distinction matters right at the DST
- * boundary: `now` can be on one side of the transition while a scheduled
- * boundary date sits on the other, a one-hour gap this method does not blur
- * (unlike, say, reusing `now`'s offset for every boundary computed from it).
+ * Constraint (documented, not enforced): the single guess-and-correct step is
+ * exact for every calendar day EXCEPT the AU DST-transition day itself. On that
+ * day the guess instant (UTC-literal midnight, ~10-11am Sydney) reads the
+ * post-transition offset while true local midnight is pre-transition, so the
+ * result is off by one hour. This is never reached by the shipped schedule:
+ * DEFAULT_SCHEDULE only uses Wednesday and Saturday, and AU DST transitions
+ * always fall on a Sunday. A custom Schedule that included the transition
+ * weekday would need a two-offset resolution (try +10 and +11, pick the one
+ * whose Sydney wall-clock is exactly this date at 00:00). Tracked as a
+ * follow-up; not fixed here to avoid churning the tested boundary math for a
+ * case the shipped schedule cannot hit.
  */
 function sydneyMidnightUtc(date: CalendarDate): Date {
   const guessMs = Date.UTC(date.year, date.month - 1, date.day, 0, 0, 0);

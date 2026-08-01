@@ -5,10 +5,19 @@ function escapeForRegex(term: string): string {
   return term.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
 
-/** True when the deal's title contains the watch term as a whole word, case-insensitive. */
+/**
+ * True when the deal's title contains the watch term as a whole word,
+ * case-insensitive. Uses Unicode-aware boundaries (letter/number/underscore)
+ * rather than `\b`: JS `\b` is ASCII-only, so a term with a leading or trailing
+ * non-ASCII letter (cafe with an accent, acai, uber) would never match next to
+ * a space or line edge.
+ */
 function titleContainsTerm(title: string, term: string): boolean {
-  const wordBoundaryPattern = new RegExp(`\\b${escapeForRegex(term)}\\b`, "i");
-  return wordBoundaryPattern.test(title);
+  const boundedPattern = new RegExp(
+    `(?<![\\p{L}\\p{N}_])${escapeForRegex(term)}(?![\\p{L}\\p{N}_])`,
+    "iu",
+  );
+  return boundedPattern.test(title);
 }
 
 /** True when the deal clears the watch's discount floor, or the discount is unknown (keyword alone decides). */
