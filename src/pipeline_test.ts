@@ -48,6 +48,11 @@ function rawDeal(overrides: Partial<RawDeal> = {}): RawDeal {
   };
 }
 
+/** A `sort()`-friendly array-of-strings comparator for asserting id sets ignoring order. */
+function sortedIds(deals: { id: string }[]): string[] {
+  return deals.map((deal) => deal.id).sort();
+}
+
 /** A PipelineSource whose `fetch` is a spy delegating to `impl`. */
 function makeSource(source: Source, impl: () => Promise<RawDeal[]>) {
   const fetchSpy = spy(impl);
@@ -131,7 +136,10 @@ Deno.test("run: a failing source is isolated; the other's matches reach both sin
   assertEquals(goodFetchSpy.calls.length, 1);
   assertEquals(badFetchSpy.calls.length, 1);
   assertEquals(saveListSpy.calls.length, 1);
-  assertEquals(saveListSpy.calls[0][0].length, 3);
+  assertEquals(
+    sortedIds(saveListSpy.calls[0][0]),
+    sortedIds(goodDeals.map((raw) => ({ id: stableId("aldi", raw.url) }))),
+  );
   assertEquals(pushSpy.calls.length, 1);
   assertEquals(
     recordAttemptSpy.calls.map(([source, , ok]) => [source, ok]),
@@ -139,6 +147,41 @@ Deno.test("run: a failing source is isolated; the other's matches reach both sin
   );
   assertEquals(summary.sourceFailures, ["coles"]);
   assertEquals(summary.matched, 3);
+});
+
+Deno.test("run: a non-matching deal is excluded from the sinks and recordSeen", async () => {
+  // Arrange
+  const matchingDeal = rawDeal({ url: "https://example.com/deal/matching" });
+  const nonMatchingDeal = rawDeal({
+    title: "Plain Bread",
+    url: "https://example.com/deal/non-matching",
+  });
+  const { pipelineSource } = makeSource(
+    "aldi",
+    () => Promise.resolve([matchingDeal, nonMatchingDeal]),
+  );
+  const { store, recordSeenSpy } = makeStore({ health: NO_HEALTH });
+  const { sinks, saveListSpy, pushSpy } = makeSinks();
+  const matchingId = stableId("aldi", matchingDeal.url);
+
+  // Act
+  const summary = await run({
+    now: NOW,
+    watchlist: WATCHLIST,
+    sources: [pipelineSource],
+    store,
+    sinks,
+  });
+
+  // Assert
+  assertEquals(saveListSpy.calls.length, 1);
+  assertEquals(saveListSpy.calls[0][0].map((deal) => deal.id), [matchingId]);
+  assertEquals(pushSpy.calls.length, 1);
+  assertEquals(recordSeenSpy.calls.length, 1);
+  assertEquals(recordSeenSpy.calls[0][0].map((deal) => deal.id), [
+    matchingId,
+  ]);
+  assertEquals(summary.matched, 1);
 });
 
 Deno.test("run: a matching new deal is recorded as seen exactly once", async () => {
@@ -189,7 +232,7 @@ Deno.test("run: a saveList failure does not block push and run does not rethrow"
   // Arrange
   const raw = rawDeal({ url: "https://example.com/deal/sink-fail" });
   const { pipelineSource } = makeSource("aldi", () => Promise.resolve([raw]));
-  const { store } = makeStore({ health: NO_HEALTH });
+  const { store, recordSeenSpy } = makeStore({ health: NO_HEALTH });
   const { sinks, saveListSpy, pushSpy } = makeSinks({
     saveListImpl: () => {
       throw new Error("disk full");
@@ -209,19 +252,53 @@ Deno.test("run: a saveList failure does not block push and run does not rethrow"
   assertEquals(saveListSpy.calls.length, 1);
   assertEquals(pushSpy.calls.length, 1);
   assertEquals(summary.matched, 1);
+  // A saveList failure means the deal never durably landed in the shopping
+  // list, so it must not be marked seen — otherwise it's dropped forever.
+  assertEquals(recordSeenSpy.calls.length, 0);
 });
 
-Deno.test("run: a source reaching the failure threshold triggers a failure-alert push", async () => {
+Deno.test("run: a deal that fails to normalize is dropped, not the whole run", async () => {
+  // Arrange
+  const badRaw = rawDeal({
+    url: "not-a-valid-url",
+    title: "Bad Extra Virgin Olive Oil",
+  });
+  const goodRaw = rawDeal({ url: "https://example.com/deal/normalize-ok" });
+  const { pipelineSource } = makeSource(
+    "aldi",
+    () => Promise.resolve([badRaw, goodRaw]),
+  );
+  const { store } = makeStore({ health: NO_HEALTH });
+  const { sinks, saveListSpy } = makeSinks();
+
+  // Act
+  const summary = await run({
+    now: NOW,
+    watchlist: WATCHLIST,
+    sources: [pipelineSource],
+    store,
+    sinks,
+  });
+
+  // Assert
+  assertEquals(saveListSpy.calls.length, 1);
+  assertEquals(saveListSpy.calls[0][0].map((deal) => deal.id), [
+    stableId("aldi", goodRaw.url),
+  ]);
+  assertEquals(summary.matched, 1);
+});
+
+Deno.test("run: a source reaching the failure threshold triggers a failure-alert push that names a re-capture", async () => {
   // Arrange
   const failingHealth: SourceHealth = {
-    source: "coles",
+    source: "woolworths",
     lastSuccessAt: null,
     // 2h ago: consecutiveFailures > 0, so backoff only clears past 1h.
     lastAttemptAt: new Date(NOW.getTime() - 2 * 60 * 60 * 1000),
     consecutiveFailures: 2, // one more failure reaches the default threshold of 3
   };
   const { pipelineSource } = makeSource(
-    "coles",
+    "woolworths",
     () => Promise.reject(new Error("still down")),
   );
   const { store } = makeStore({ health: [failingHealth] });
@@ -238,7 +315,43 @@ Deno.test("run: a source reaching the failure threshold triggers a failure-alert
 
   // Assert
   assertEquals(pushSpy.calls.length, 1);
-  assertStringIncludes(pushSpy.calls[0][0], "coles");
+  assertStringIncludes(pushSpy.calls[0][0], "woolworths");
+  // Session-based sources (coles/woolworths) point at the re-capture doc,
+  // since an expired captured session is the likely cause.
+  assertStringIncludes(pushSpy.calls[0][0], "re-capture");
+  assertStringIncludes(pushSpy.calls[0][0], "STORE-CAPTURE.md");
+});
+
+Deno.test("run: a public-API source's failure alert stays plain (no re-capture wording)", async () => {
+  // Arrange
+  const failingHealth: SourceHealth = {
+    source: "aldi",
+    lastSuccessAt: null,
+    lastAttemptAt: new Date(NOW.getTime() - 2 * 60 * 60 * 1000),
+    consecutiveFailures: 2, // one more failure reaches the default threshold of 3
+  };
+  const { pipelineSource } = makeSource(
+    "aldi",
+    () => Promise.reject(new Error("still down")),
+  );
+  const { store } = makeStore({ health: [failingHealth] });
+  const { sinks, pushSpy } = makeSinks();
+
+  // Act
+  await run({
+    now: NOW,
+    watchlist: WATCHLIST,
+    sources: [pipelineSource],
+    store,
+    sinks,
+  });
+
+  // Assert
+  assertEquals(pushSpy.calls.length, 1);
+  assertEquals(
+    pushSpy.calls[0][0],
+    'dealwatch: source "aldi" failed 3 times in a row',
+  );
 });
 
 Deno.test("run: a source outside the due set is never fetched", async () => {
