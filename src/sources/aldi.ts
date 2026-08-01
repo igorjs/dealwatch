@@ -1,5 +1,6 @@
 import { z } from "zod";
 import type { AldiStoreProfile, RawDeal } from "../types.ts";
+import { toCents } from "../core/price.ts";
 
 /**
  * Thrown by fetchAldi on a non-2xx response or a body that isn't valid JSON
@@ -54,8 +55,14 @@ const AldiPayloadSchema = z.object({
 /**
  * Validates and maps an Aldi product-search response into RawDeal[]. Pure:
  * no I/O. Throws a Zod error on a malformed entry or a wholly invalid
- * payload. `discountPercent` is always null (Assumption 18: Aldi specials
- * aren't percentage discounts, matching is keyword-only downstream).
+ * payload.
+ *
+ * Both `wasPriceCents` and `discountPercent` are always null (Assumption 18:
+ * Aldi specials are flat "Super Savers" prices, not was/now percentage
+ * discounts, so matching is keyword-only). Leaving `wasPriceCents` null is
+ * load-bearing: `normalize` derives a discount from was/now when the source
+ * gives none, and a derived discount would then gate the deal against the
+ * watch's `minDiscountPercent`, silently dropping a keyword-matched Aldi deal.
  */
 export function parseAldiPayload(json: unknown): RawDeal[] {
   const payload = AldiPayloadSchema.parse(json);
@@ -66,10 +73,8 @@ export function parseAldiPayload(json: unknown): RawDeal[] {
     url: `https://www.aldi.com.au/product/${product.urlSlugText}`,
     store: "Aldi",
     department: product.categoryName,
-    priceCents: Math.round(product.price.amount * 100),
-    wasPriceCents: product.price.wasAmount === null
-      ? null
-      : Math.round(product.price.wasAmount * 100),
+    priceCents: toCents(product.price.amount),
+    wasPriceCents: null,
     discountPercent: null,
   }));
 }
