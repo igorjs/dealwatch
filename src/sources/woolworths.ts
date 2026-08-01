@@ -1,6 +1,7 @@
 import { z } from "zod";
 import { SourceError } from "./errors.ts";
 import type { RawDeal, StoreProfile } from "../types.ts";
+import { toCents } from "../core/price.ts";
 
 /**
  * PLACEHOLDER SCHEMA. The Woolworths half-price request is captured (plan's
@@ -59,10 +60,8 @@ export function parseWoolworthsPayload(json: unknown): RawDeal[] {
         `https://www.woolworths.com.au/shop/productdetails/${product.stockcode}/${product.urlFriendlyName}`,
       store: "Woolworths",
       department: product.department,
-      priceCents: Math.round(product.price.price * 100),
-      wasPriceCents: product.price.wasPrice === null
-        ? null
-        : Math.round(product.price.wasPrice * 100),
+      priceCents: toCents(product.price.price),
+      wasPriceCents: toCents(product.price.wasPrice),
       discountPercent: null,
     }))
   );
