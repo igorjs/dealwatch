@@ -114,6 +114,12 @@ Deno.test("fetchColes returns RawDeal[] on a successful response", async () => {
   assertEquals(calls.length, 1);
   assertEquals(calls[0].url, PROFILE.url);
   assertEquals(calls[0].init?.method, "POST");
+  assertEquals(
+    (calls[0].init?.headers as Record<string, string>)[
+      "ocp-apim-subscription-key"
+    ],
+    "test-subscription-key",
+  );
   const deal = deals[0] as RawDeal;
   assertEquals(deal.source, "coles");
   assertEquals(deals.length, 3);
@@ -129,6 +135,19 @@ Deno.test("fetchColes throws SourceError on a non-2xx response (429)", async () 
     () => fetchColes(PROFILE, fetchFn),
     SourceError,
     "429",
+  );
+});
+
+Deno.test("fetchColes throws SourceError on a non-2xx response (403)", async () => {
+  // Arrange
+  const fetchFn: typeof fetch = () =>
+    Promise.resolve(new Response(null, { status: 403 }));
+
+  // Act + Assert
+  await assertRejects(
+    () => fetchColes(PROFILE, fetchFn),
+    SourceError,
+    "403",
   );
 });
 

@@ -1,6 +1,7 @@
 import { z } from "zod";
 import type { RawDeal, StoreProfile } from "../types.ts";
 import { SourceError } from "./errors.ts";
+import { toCents } from "../core/price.ts";
 
 /**
  * PLACEHOLDER SCHEMA, HIGH UNCERTAINTY. Unlike Woolworths and Aldi, the only
@@ -59,10 +60,8 @@ export function parseColesPayload(json: unknown): RawDeal[] {
     url: `https://www.coles.com.au/product/${product.seoToken}`,
     store: "Coles",
     department: product.onlineHeirs[0]?.category ?? null,
-    priceCents: Math.round(product.pricing.now * 100),
-    wasPriceCents: product.pricing.was === null
-      ? null
-      : Math.round(product.pricing.was * 100),
+    priceCents: toCents(product.pricing.now),
+    wasPriceCents: toCents(product.pricing.was),
     discountPercent: null,
   }));
 }
