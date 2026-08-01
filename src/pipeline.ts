@@ -71,6 +71,33 @@ async function safePush(sinks: PipelineSinks, message: string): Promise<void> {
 }
 
 /**
+ * Sources fetched using a captured browser session (see
+ * `scripts/STORE-CAPTURE.md`) rather than a plain public API. A repeated
+ * fetch failure on one of these is most often an expired session, not a
+ * transient outage — worth calling out explicitly in the failure alert.
+ */
+const SESSION_BASED_SOURCES: ReadonlySet<Source> = new Set([
+  "coles",
+  "woolworths",
+]);
+
+/**
+ * Formats the failure-alert push text for a source that just hit
+ * `failureThreshold` consecutive failures. Session-based sources point at
+ * the re-capture doc, since an expired capture is the likely cause; other
+ * sources (e.g. Aldi's public API) get a plain failure message.
+ */
+function formatFailureAlert(
+  source: Source,
+  consecutiveFailures: number,
+): string {
+  if (SESSION_BASED_SOURCES.has(source)) {
+    return `dealwatch: source "${source}" failed ${consecutiveFailures} times in a row — its captured session has likely expired, re-capture it (see scripts/STORE-CAPTURE.md)`;
+  }
+  return `dealwatch: source "${source}" failed ${consecutiveFailures} times in a row`;
+}
+
+/**
  * Runs one pipeline pass: picks due sources, fetches them under
  * `allSettled` (a broken source never stops the others), normalizes and
  * dedupes the results, matches against the watchlist, and delivers new
@@ -128,17 +155,28 @@ export async function run(deps: PipelineDeps): Promise<PipelineSummary> {
     const consecutiveFailures = (priorFailures.get(source) ?? 0) + 1;
     if (consecutiveFailures >= failureThreshold) {
       failureAlerts.push(
-        safePush(
-          sinks,
-          `dealwatch: source "${source}" has failed ${consecutiveFailures} times in a row`,
-        ),
+        safePush(sinks, formatFailureAlert(source, consecutiveFailures)),
       );
     }
   });
   await Promise.allSettled(failureAlerts);
 
-  // 3. Normalize every collected RawDeal.
-  const deals = rawDeals.map((raw) => normalize(raw, now));
+  // 3. Normalize every collected RawDeal, isolated per deal (mirrors the
+  // fetch-stage isolation above): `normalize` can throw on a single
+  // malformed RawDeal (e.g. an unparsable url, or a store schema drift), and
+  // one bad deal shouldn't nuke every other deal collected this pass. Log
+  // and drop just that deal instead.
+  const deals: Deal[] = [];
+  for (const raw of rawDeals) {
+    try {
+      deals.push(normalize(raw, now));
+    } catch (error) {
+      console.error(
+        `dealwatch: failed to normalize deal from source "${raw.source}" (${raw.url}):`,
+        error,
+      );
+    }
+  }
 
   // 4. Drop deals already recorded as seen.
   const newDeals = store.filterNew(deals);
@@ -169,17 +207,21 @@ export async function run(deps: PipelineDeps): Promise<PipelineSummary> {
     if (pushResult.status === "rejected") {
       console.error("dealwatch: push sink failed:", pushResult.reason);
     }
-  }
 
-  // 7. Record only the ALERTED (matched) deals as seen. A new deal that
-  // didn't match today stays un-seen on purpose: if the watchlist changes
-  // later (a term added or a floor relaxed), that deal is still eligible to
-  // match and alert on a future run instead of being silently dedupe-locked
-  // out by having passed through once already. This guarantees each
-  // matching deal alerts exactly once, at the cost of re-normalizing and
-  // re-matching non-matching deals on every run until a source stops
-  // returning them.
-  store.recordSeen(matched);
+    // 7. Record matched deals as seen — but only once the shopping list (the
+    // durable source of truth) confirms it saved them; the ntfy push is a
+    // transient alert. If saveList failed (corrupt shopping-list.json, disk
+    // full), skip recordSeen so these deals aren't dropped forever by
+    // filterNew — they retry, and re-alert, next run instead. A duplicate
+    // ntfy ping on retry is an acceptable cost for avoiding silent data
+    // loss. (A new deal that didn't match today stays un-seen for a related
+    // reason: if the watchlist changes later, that deal is still eligible to
+    // match and alert on a future run instead of being silently
+    // dedupe-locked out by having passed through once already.)
+    if (saveListResult.status === "fulfilled") {
+      store.recordSeen(matched);
+    }
+  }
 
   return {
     due,
