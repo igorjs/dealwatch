@@ -32,6 +32,9 @@ Deno.test("parseAldiPayload maps the fixture to RawDeal[] with priceCents set an
     assertEquals(deal.source, "aldi");
     assertEquals(deal.store, "Aldi");
     assertEquals(deal.discountPercent, null);
+    // Keyword-only source: wasPriceCents stays null so normalize never derives
+    // a discount that could gate the deal against a watch floor (Assumption 18).
+    assertEquals(deal.wasPriceCents, null);
     assertEquals(typeof deal.priceCents, "number");
   }
   assertEquals(deals[0].title, "Sourdough Vienna Loaf 660g");
@@ -40,9 +43,9 @@ Deno.test("parseAldiPayload maps the fixture to RawDeal[] with priceCents set an
     "https://www.aldi.com.au/product/bakers-life-sourdough-vienna-loaf-660g",
   );
   assertEquals(deals[0].priceCents, 349);
-  assertEquals(deals[0].wasPriceCents, null);
   assertEquals(deals[0].department, "Bakery");
-  assertEquals(deals[1].wasPriceCents, 649);
+  // deals[1]'s fixture carries a wasAmount, but Aldi deals never propagate it.
+  assertEquals(deals[1].wasPriceCents, null);
   assertEquals(deals[2].department, null);
 });
 
