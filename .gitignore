@@ -1,0 +1,8 @@
+*.db
+*.sqlite
+*.sqlite-journal
+*.sqlite-wal
+*.sqlite-shm
+shopping-list.json
+config.local.json
+dealwatch.db

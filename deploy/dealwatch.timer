@@ -1,0 +1,45 @@
+# dealwatch.timer — fires dealwatch.service roughly every 20 minutes, with
+# randomized jitter so polling isn't perfectly periodic (kinder to store
+# endpoints and less fingerprintable as an exact-interval bot).
+#
+# The pipeline self-gates internally (per-source weekly refresh schedule in
+# Australia/Sydney time, plus hourly backoff on a source with consecutive
+# failures — see AGENTS.md / the design plan's Architecture and Assumptions
+# 10-11). Most 20-min ticks are therefore a fast no-op; this timer's only
+# job is to tick often enough that the schedule/backoff logic has
+# granularity to act on.
+#
+# Install: see deploy/README.md. In short:
+#   sudo cp deploy/dealwatch.timer /etc/systemd/system/
+#   sudo systemctl daemon-reload
+#   sudo systemctl enable --now dealwatch.timer
+#
+# IMPORTANT: verify NTP time sync BEFORE enabling this timer — see the "NTP
+# time sync" section of deploy/README.md. The self-gating schedule and the
+# per-source health/backoff timestamps this pipeline relies on are only
+# correct if the system clock is correct.
+
+[Unit]
+Description=Run dealwatch every 20 minutes (jittered)
+Documentation=file:///opt/dealwatch/deploy/README.md
+
+[Timer]
+# Also run shortly after boot, in case the Pi was powered off during what
+# would have been a normal tick.
+OnBootSec=20min
+# Then every 20 minutes measured from when the service last activated (not
+# wall-clock-aligned — if a run is delayed, the next one is 20 min after
+# that run, not "on the hour").
+OnUnitActiveSec=20min
+# Jitter: systemd adds a random extra delay in [0, 180s] to each scheduled
+# activation, so ticks drift instead of landing on an exact 20-min beat.
+RandomizedDelaySec=180
+# If the Pi was off/asleep past a scheduled activation, run once on the
+# next boot to catch up, instead of silently skipping straight to the
+# following tick.
+Persistent=true
+
+Unit=dealwatch.service
+
+[Install]
+WantedBy=timers.target
