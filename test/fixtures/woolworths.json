@@ -1,0 +1,35 @@
+{
+  "_placeholder": "PLACEHOLDER FIXTURE. No real Woolworths browse/category response has been captured yet (plan Assumption 19 / the 'Woolworths (deals request captured...)' Capture notes) -- only the POST request (URL, headers, body) is known. This models the plausible shape of POST https://www.woolworths.com.au/apis/ui/browse/category from public knowledge of Woolworths' browse API, not a real payload. Refine this fixture together with the WoolworthsPayloadSchema in src/sources/woolworths.ts once a real response body is captured on the Pi (see scripts/STORE-CAPTURE.md).",
+  "bundles": [
+    {
+      "products": [
+        {
+          "stockcode": 123456,
+          "name": "Woolworths Full Cream Milk 3L",
+          "urlFriendlyName": "woolworths-full-cream-milk-3l",
+          "price": { "price": 4.5, "wasPrice": 9.0 },
+          "department": "Dairy, Eggs & Fridge"
+        },
+        {
+          "stockcode": 234567,
+          "name": "Arnott's Tim Tam Original 200g",
+          "urlFriendlyName": "arnotts-tim-tam-original-200g",
+          "price": { "price": 3.0, "wasPrice": 6.0 },
+          "department": "Pantry"
+        }
+      ]
+    },
+    {
+      "products": [
+        {
+          "stockcode": 345678,
+          "name": "Coca-Cola Classic 1.25L",
+          "urlFriendlyName": "coca-cola-classic-125l",
+          "price": { "price": 2.5, "wasPrice": null },
+          "department": null
+        }
+      ]
+    }
+  ],
+  "totalRecordCount": 3
+}
