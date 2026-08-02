@@ -1,0 +1,34 @@
+{
+  "watchlist": [
+    {
+      "term": "chicken breast",
+      "minDiscountPercent": 50,
+      "exclude": []
+    },
+    {
+      "term": "olive oil",
+      "minDiscountPercent": 30,
+      "exclude": ["spray"]
+    }
+  ],
+  "sinks": {
+    "shoppingListPath": "./shopping-list.json",
+    "ntfy": {
+      "topicUrl": "https://ntfy.sh/CHANGE-ME-dealwatch-topic"
+    }
+  },
+  "stores": {
+    "aldi": {
+      "servicePoint": "CHANGE-ME-aldi-store-code",
+      "categoryKeys": ["1588161426952145", "1588161420755352"]
+    },
+    "coles": {
+      "url": "https://www.coles.com.au/api/graphql",
+      "headers": {}
+    },
+    "woolworths": {
+      "url": "https://www.woolworths.com.au/apis/ui/browse/category",
+      "headers": {}
+    }
+  }
+}
