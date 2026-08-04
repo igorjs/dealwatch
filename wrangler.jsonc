@@ -1,0 +1,32 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "dealwatch",
+  "main": "src/index.ts",
+  "compatibility_date": "2026-08-04",
+  "compatibility_flags": ["nodejs_compat"],
+  // Browser Rendering binding, used by @cloudflare/puppeteer to drive a
+  // headless browser for scraping store deal pages.
+  "browser": {
+    "binding": "BROWSER"
+  },
+  "d1_databases": [
+    {
+      "binding": "DB",
+      "database_name": "dealwatch",
+      // Placeholder UUID. Replace with the real id printed by
+      // `wrangler d1 create dealwatch` before the first deploy.
+      "database_id": "00000000-0000-0000-0000-000000000000",
+      "migrations_dir": "migrations"
+    }
+  ],
+  "r2_buckets": [
+    {
+      "binding": "LIST",
+      "bucket_name": "dealwatch-shopping-list"
+    }
+  ],
+  "triggers": {
+    // Wed and Sat, 19:00 UTC.
+    "crons": ["0 19 * * 3", "0 19 * * 6"]
+  }
+}

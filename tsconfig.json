@@ -15,6 +15,6 @@
     "isolatedModules": true,
     "verbatimModuleSyntax": true,
     "noEmit": true,
-    "types": []
+    "types": ["@cloudflare/vitest-pool-workers/types"]
   }
 }
