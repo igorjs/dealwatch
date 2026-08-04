@@ -1,0 +1,21 @@
+{
+  "name": "dealwatch",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "test": "vitest run",
+    "dev": "wrangler dev",
+    "deploy": "wrangler deploy",
+    "cf-typegen": "wrangler types"
+  },
+  "dependencies": {
+    "zod": "4.4.3",
+    "@cloudflare/puppeteer": "1.2.0"
+  },
+  "devDependencies": {
+    "wrangler": "4.118.0",
+    "@cloudflare/vitest-pool-workers": "0.20.1",
+    "vitest": "4.1.10",
+    "typescript": "5.9.3"
+  }
+}

@@ -6,3 +6,8 @@
 shopping-list.json
 config.local.json
 dealwatch.db
+.claude/implement/
+.claude/worktrees/
+node_modules/
+.wrangler/
+dist/
