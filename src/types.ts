@@ -47,16 +47,19 @@ export const WatchSchema = z.object({
 });
 export type Watch = z.infer<typeof WatchSchema>;
 
-/** A captured request profile (URL + headers) for a store that's fetched via plain HTTP. */
+/**
+ * A store profile for a store fetched via Browser Rendering. Browser
+ * Rendering mints its own session per run, so there's no captured header
+ * map here — just the URL to navigate/fetch in-page.
+ */
 export const StoreProfileSchema = z.object({
   url: z.string(),
-  headers: z.record(z.string(), z.string()).default({}),
 });
 export type StoreProfile = z.infer<typeof StoreProfileSchema>;
 
 /**
  * Aldi is fetched via its product-search service rather than a scraped page,
- * so its profile carries a service endpoint + category keys instead of url/headers.
+ * so its profile carries a service endpoint + category keys instead of url.
  */
 export const AldiStoreProfileSchema = z.object({
   servicePoint: z.string(),
@@ -64,14 +67,15 @@ export const AldiStoreProfileSchema = z.object({
 });
 export type AldiStoreProfile = z.infer<typeof AldiStoreProfileSchema>;
 
-/** The app config. `watchlist` must be non-empty so consumers never handle a no-op watch run. */
+/**
+ * The app config. `watchlist` must be non-empty so consumers never handle a
+ * no-op watch run. `ntfy` is a direct top-level field (not nested under a
+ * `sinks` object) since R2 is the only other sink and needs no config here.
+ */
 export const ConfigSchema = z.object({
   watchlist: z.array(WatchSchema).min(1),
-  sinks: z.object({
-    shoppingListPath: z.string(),
-    ntfy: z.object({
-      topicUrl: z.string(),
-    }),
+  ntfy: z.object({
+    topicUrl: z.string(),
   }),
   stores: z.object({
     aldi: AldiStoreProfileSchema,

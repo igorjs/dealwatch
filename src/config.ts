@@ -1,66 +1,39 @@
-import { type Config, ConfigSchema } from "./types.ts";
+import {
+  AldiStoreProfileSchema,
+  StoreProfileSchema,
+  type Watch,
+  WatchSchema,
+} from "./types";
 
 /**
- * Reads the config file at `path`, applies env overrides for secrets, then
- * parses with `ConfigSchema`. Throws on a missing file, malformed JSON, or a
- * schema violation.
- *
- * `env` defaults to `Deno.env.toObject()` so production runs pick up real
- * process env, but tests must always pass an explicit `env` object — reading
- * real process env in a test breaks determinism (Assumption 15/testing
- * strategy: no test reads real process env).
+ * The watchlist DealWatch matches deals against. This is a placeholder —
+ * edit these entries to your own grocery preferences before deploying.
  */
-export function loadConfig(
-  path: string,
-  env: Record<string, string> = Deno.env.toObject(),
-): Config {
-  const raw = Deno.readTextFileSync(path);
-
-  let parsed: unknown;
-  try {
-    parsed = JSON.parse(raw);
-  } catch (cause) {
-    throw new Error(`Config file at "${path}" is not valid JSON`, { cause });
-  }
-
-  const withOverrides = applyEnvOverrides(parsed, env);
-
-  const result = ConfigSchema.safeParse(withOverrides);
-  if (!result.success) {
-    throw new Error(
-      `Config file at "${path}" failed validation: ${result.error.message}`,
-    );
-  }
-
-  return result.data;
-}
+export const watchlist: Watch[] = [
+  { term: "chicken breast", minDiscountPercent: 50, exclude: [] },
+  { term: "beef mince", minDiscountPercent: 40, exclude: [] },
+  { term: "salmon", minDiscountPercent: 30, exclude: ["smoked"] },
+].map((watch) => WatchSchema.parse(watch));
 
 /**
- * Applies env overrides for secrets on top of the raw parsed JSON, before
- * schema validation. Only overrides fields that are actually set in `env` so
- * an unset var never clobbers a value from the file with `undefined`.
+ * Store profiles for the three sources. These are non-secret, public page
+ * and API URLs — Browser Rendering mints its own session per run, so unlike
+ * v1 there's no captured header/cookie map to bundle here.
  */
-function applyEnvOverrides(
-  parsed: unknown,
-  env: Record<string, string>,
-): unknown {
-  const ntfyTopic = env.DEALWATCH_NTFY_TOPIC;
-  if (ntfyTopic === undefined) {
-    return parsed;
-  }
-
-  const config = parsed as {
-    sinks?: { ntfy?: Record<string, unknown> };
-  };
-
-  return {
-    ...config,
-    sinks: {
-      ...config?.sinks,
-      ntfy: {
-        ...config?.sinks?.ntfy,
-        topicUrl: ntfyTopic,
-      },
-    },
-  };
-}
+export const storeProfiles = {
+  aldi: AldiStoreProfileSchema.parse({
+    // Placeholder store code — replace with your local Aldi store's
+    // servicePoint before deploying. See scripts/STORE-CAPTURE.md.
+    servicePoint: "G452",
+    categoryKeys: [
+      "1588161426952145", // Super Savers
+      "1588161420755352", // Limited Time Only
+    ],
+  }),
+  coles: StoreProfileSchema.parse({
+    url: "https://www.coles.com.au/on-special?filter_Special=halfprice",
+  }),
+  woolworths: StoreProfileSchema.parse({
+    url: "https://www.woolworths.com.au/apis/ui/browse/category",
+  }),
+};
