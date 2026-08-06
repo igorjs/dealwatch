@@ -40,6 +40,14 @@ export const REAL_FETCHERS: SourceFetchers = {
   coles: (page) => fetchColesViaBrowser(page),
 };
 
+/**
+ * Everything `runPipeline` needs for one pass, injected rather than read
+ * from a global or reconstructed internally — this repo's "dependency
+ * injection, not global mocks" convention (clock, storage, browser session,
+ * and the push/fetch seams all pass straight through) is what lets tests
+ * exercise the real D1/R2 bindings while faking only Browser Rendering and
+ * ntfy, the two things with no local equivalent.
+ */
 export type PipelineDeps = {
   now: Date;
   config: Config;
