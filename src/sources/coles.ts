@@ -26,7 +26,8 @@ import { toCents } from "../core/price";
  *   - `onlineHeirs` is the category breadcrumb; its first entry's
  *     `category` is treated as the department. It may be empty.
  * Refine this schema and test/fixtures/coles.json together once a real
- * capture exists (see scripts/STORE-CAPTURE.md).
+ * response body has been captured from the site's own GraphQL call (DevTools
+ * Network tab on `/on-special?filter_Special=halfprice`).
  */
 const ColesProductSchema = z.object({
   id: z.union([z.number(), z.string()]),

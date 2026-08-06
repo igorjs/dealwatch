@@ -1,5 +1,5 @@
 {
-  "_placeholder": "PLACEHOLDER FIXTURE, HIGH UNCERTAINTY. The only Coles request captured so far is the GetProductCategories operation (plan Capture notes, 2026-07-31), NOT the half-price product-listing operation behind /on-special?filter_Special=halfprice. This models a best-effort guess at a Coles GraphQL product-search response shape (data.results.results[] + totalCount, product fields id/name/brand/pricing.now/pricing.was/seoToken/onlineHeirs[].category). Refine this fixture together with the Zod schema in src/sources/coles.ts once the real product-listing request/response is captured (see scripts/STORE-CAPTURE.md).",
+  "_placeholder": "PLACEHOLDER FIXTURE, HIGH UNCERTAINTY. The only Coles request ever captured is the GetProductCategories operation, NOT the half-price product-listing operation behind /on-special?filter_Special=halfprice. This models a best-effort guess at a Coles GraphQL product-search response shape (data.results.results[] + totalCount, product fields id/name/brand/pricing.now/pricing.was/seoToken/onlineHeirs[].category). Refine this fixture together with the Zod schema in src/sources/coles.ts once the real product-listing request/response is captured (DevTools Network tab on /on-special?filter_Special=halfprice, or Browser Rendering's own intercepted response).",
   "data": {
     "results": {
       "results": [

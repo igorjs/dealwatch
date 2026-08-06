@@ -1,5 +1,5 @@
 {
-  "_placeholder": "PLACEHOLDER FIXTURE. No real Woolworths browse/category response has been captured yet (plan Assumption 19 / the 'Woolworths (deals request captured...)' Capture notes) -- only the POST request (URL, headers, body) is known. This models the plausible shape of POST https://www.woolworths.com.au/apis/ui/browse/category from public knowledge of Woolworths' browse API, not a real payload. Refine this fixture together with the WoolworthsPayloadSchema in src/sources/woolworths.ts once a real response body is captured on the Pi (see scripts/STORE-CAPTURE.md).",
+  "_placeholder": "PLACEHOLDER FIXTURE. No real Woolworths browse/category response has been captured yet -- only the POST request shape (URL, body) is known. This models the plausible shape of POST https://www.woolworths.com.au/apis/ui/browse/category from public knowledge of Woolworths' browse API, not a real payload. Refine this fixture together with the WoolworthsPayloadSchema in src/sources/woolworths.ts once a real response body is captured (DevTools Network tab, or a live Browser Rendering run's own fetched JSON).",
   "bundles": [
     {
       "products": [

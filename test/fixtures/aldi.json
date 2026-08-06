@@ -1,5 +1,5 @@
 {
-  "_placeholder": "PLACEHOLDER FIXTURE. No real Aldi product-search response has been captured yet (plan Assumption 19 / Capture notes). This models the plausible shape of GET https://api.aldi.com.au/v3/product-search based on the captured request URL only. Refine this fixture together with the AldiPayloadSchema in src/sources/aldi.ts once a real response body is captured on the Pi (see scripts/STORE-CAPTURE.md).",
+  "_placeholder": "PLACEHOLDER FIXTURE. No real Aldi product-search response has been captured yet. This models the plausible shape of GET https://api.aldi.com.au/v3/product-search based on the captured request URL only. Refine this fixture together with the AldiPayloadSchema in src/sources/aldi.ts once a real response body is captured (DevTools Network tab, or a live Browser Rendering run's own fetched JSON).",
   "data": [
     {
       "sku": "000000042000001",
