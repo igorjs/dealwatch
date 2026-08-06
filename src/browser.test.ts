@@ -131,6 +131,37 @@ describe("withSourcesSerial", () => {
     ]);
   });
 
+  it("isolates a browser.newPage() failure to that source and still runs the next source", async () => {
+    // Arrange: newPage() itself throws for source "A" (e.g. Browser
+    // Rendering's concurrent-session limit) — a real failure mode, not just
+    // the callback throwing. Source "B" gets a real page and succeeds.
+    const pageB = fakePage();
+    const newPageFailure = new Error("no more browser sessions available");
+    let call = 0;
+    const browser: BrowserSession = {
+      newPage: vi.fn(async () => {
+        call += 1;
+        if (call === 1) throw newPageFailure;
+        return pageB;
+      }),
+      close: vi.fn().mockResolvedValue(undefined),
+    };
+    const fn = vi.fn(async () => "ok");
+
+    // Act
+    const results = await withSourcesSerial(["A", "B"], fn, browser);
+
+    // Assert: A's newPage() failure is captured as a rejected result, not
+    // thrown out of withSourcesSerial, and B still runs and succeeds.
+    expect(results).toEqual([
+      { source: "A", status: "rejected", reason: newPageFailure },
+      { source: "B", status: "fulfilled", value: "ok" },
+    ]);
+    expect(fn).toHaveBeenCalledTimes(1);
+    expect(fn).toHaveBeenCalledWith("B", pageB);
+    expect(pageB.close).toHaveBeenCalledTimes(1);
+  });
+
   it("closes the page in finally even when the callback resolves normally", async () => {
     // Arrange
     const page = fakePage();
