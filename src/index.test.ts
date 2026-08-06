@@ -1,13 +1,19 @@
 import { env } from "cloudflare:workers";
-import { applyD1Migrations, createExecutionContext, waitOnExecutionContext } from "cloudflare:test";
+import {
+  applyD1Migrations,
+  createExecutionContext,
+  createScheduledController,
+  waitOnExecutionContext,
+} from "cloudflare:test";
 import type { D1Migration } from "@cloudflare/vitest-pool-workers";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { createHandler, runOnePass } from "./index";
 import type { BrowserSession, PageLike } from "./browser";
 import { LIST_KEY, readList } from "./listStore";
 import { runPipeline } from "./pipeline";
-import { recordAttempt } from "./store";
-import type { RawDeal } from "./types";
+import { filterNew, recordAttempt } from "./store";
+import type { Config, Deal, RawDeal } from "./types";
+import { normalize } from "./core/normalize";
 
 // `TEST_MIGRATIONS` is a test-only binding wired in vitest.config.ts, same
 // pattern as store.test.ts / pipeline.test.ts.
@@ -179,6 +185,159 @@ describe("fetch: POST /run", () => {
     const grouped = await readList(env.LIST, listKey);
     const allItems = Object.values(grouped).flat();
     expect(allItems.some((item) => item.url === dealUrl)).toBe(true);
+  });
+});
+
+describe("scheduled: end-to-end across all three sources", () => {
+  /**
+   * One matching RawDeal per source, each with a distinct department so
+   * `toCategory` maps them to distinct shared categories (proving `readList`
+   * groups by category rather than just flattening). Titles all contain
+   * "bargain widget" so a single watch term matches all three.
+   */
+  function fixtureDeals(runId: string): Record<"aldi" | "woolworths" | "coles", RawDeal> {
+    return {
+      aldi: {
+        source: "aldi",
+        title: "Bargain Widget Aldi Special",
+        url: `https://example.com/aldi/${runId}`,
+        store: "Aldi Example",
+        department: "Produce",
+        priceCents: 300,
+        wasPriceCents: 600,
+        discountPercent: 50,
+      },
+      woolworths: {
+        source: "woolworths",
+        title: "Bargain Widget Woolworths Special",
+        url: `https://example.com/woolworths/${runId}`,
+        store: "Woolworths Example",
+        department: "Meat & Seafood",
+        priceCents: 400,
+        wasPriceCents: 800,
+        discountPercent: 50,
+      },
+      coles: {
+        source: "coles",
+        title: "Bargain Widget Coles Special",
+        url: `https://example.com/coles/${runId}`,
+        store: "Coles Example",
+        department: "Bakery",
+        priceCents: 250,
+        wasPriceCents: 500,
+        discountPercent: 50,
+      },
+    };
+  }
+
+  function fixtureConfig(env: Pick<Env, "NTFY_TOPIC_URL">): Config {
+    return {
+      watchlist: [{ term: "bargain widget", minDiscountPercent: 0, exclude: [] }],
+      ntfy: { topicUrl: env.NTFY_TOPIC_URL },
+      stores: {
+        aldi: { servicePoint: "G452", categoryKeys: ["cat-1"] },
+        coles: { url: "https://www.coles.com.au/on-special?filter_Special=halfprice" },
+        woolworths: { url: "https://www.woolworths.com.au/apis/ui/browse/category" },
+      },
+    };
+  }
+
+  it("populates D1 seen_deal, writes R2 grouped by category, and fires one push covering all matches; a second identical pass is a dedup no-op", async () => {
+    // Arrange: unique R2 key + unique deal urls for this test's isolated
+    // slice of the shared per-file D1/R2 storage.
+    const runId = crypto.randomUUID();
+    const deals = fixtureDeals(runId);
+    const listKey = `list-scheduled-${runId}.json`;
+    const pushFn = vi.fn().mockResolvedValue(undefined);
+
+    const handler = createHandler({
+      launchFn: vi.fn().mockResolvedValue(fakeBrowser()),
+      buildConfigFn: fixtureConfig,
+      runPipelineFn: (deps) =>
+        runPipeline({
+          ...deps,
+          listKey,
+          pushFn,
+          fetchers: {
+            aldi: vi.fn().mockResolvedValue([deals.aldi]),
+            woolworths: vi.fn().mockResolvedValue([deals.woolworths]),
+            coles: vi.fn().mockResolvedValue([deals.coles]),
+          },
+        }),
+    });
+
+    // Act: pass 1 — a full scheduled() run via the real Cron entry point.
+    const controller = createScheduledController();
+    const ctx = createExecutionContext();
+    await handler.scheduled!(controller, testWorkerEnv(), ctx);
+    await waitOnExecutionContext(ctx);
+
+    // Assert: R2 holds all three deals, grouped by category (distinct
+    // categories per source's department, not just flat presence).
+    const grouped = await readList(env.LIST, listKey);
+    expect(grouped["fruit-veg"]?.map((item) => item.url)).toEqual([
+      deals.aldi.url,
+    ]);
+    expect(grouped["meat-seafood"]?.map((item) => item.url)).toEqual([
+      deals.woolworths.url,
+    ]);
+    expect(grouped["bakery"]?.map((item) => item.url)).toEqual([
+      deals.coles.url,
+    ]);
+
+    // Assert: exactly one push fired, covering all three matched deals.
+    expect(pushFn).toHaveBeenCalledTimes(1);
+    const [pushMessage] = pushFn.mock.calls[0] as [string, string];
+    expect(pushMessage).toContain("3 new matching deal(s)");
+    expect(pushMessage).toContain("Bargain Widget Aldi Special");
+    expect(pushMessage).toContain("Bargain Widget Woolworths Special");
+    expect(pushMessage).toContain("Bargain Widget Coles Special");
+
+    // Assert: D1 seen_deal now has rows for all three deals — filterNew on
+    // the same (normalized) deals returns nothing left to filter.
+    const now = new Date();
+    const normalized: Deal[] = [
+      normalize(deals.aldi, now),
+      normalize(deals.woolworths, now),
+      normalize(deals.coles, now),
+    ];
+    const stillNew = await filterNew(testEnv.DB, normalized);
+    expect(stillNew).toEqual([]);
+
+    // Act: pass 2 — identical fetcher results, same listKey, same pushFn spy.
+    const controller2 = createScheduledController();
+    const ctx2 = createExecutionContext();
+    await handler.scheduled!(controller2, testWorkerEnv(), ctx2);
+    await waitOnExecutionContext(ctx2);
+
+    // Assert: dedup no-op — no new push (matched.length === 0 on pass 2
+    // skips the whole push/R2 block entirely), no error, call count
+    // unchanged from pass 1.
+    expect(pushFn).toHaveBeenCalledTimes(1);
+    const groupedAfterSecondPass = await readList(env.LIST, listKey);
+    expect(groupedAfterSecondPass).toEqual(grouped);
+  });
+
+  it("does not rethrow when buildConfig throws (crash-notify best-effort path)", async () => {
+    // Arrange: buildConfigFn throws before any pipeline work happens, so
+    // scheduled's catch block runs with `config` still undefined — no
+    // crash-notify push is even attempted (see src/index.ts's `scheduled`).
+    const buildConfigFn = vi.fn(() => {
+      throw new Error("bad NTFY_TOPIC_URL secret");
+    });
+    const handler = createHandler({ buildConfigFn });
+    const controller = createScheduledController();
+    const ctx = createExecutionContext();
+
+    // Act + Assert: resolves (does not reject/throw) despite the failure.
+    await expect(
+      handler.scheduled!(controller, testWorkerEnv(), ctx),
+    ).resolves.toBeUndefined();
+    await waitOnExecutionContext(ctx);
+    // buildConfigFn threw before `config` could be assigned, so scheduled's
+    // catch block skips the crash-notify push entirely (see src/index.ts:
+    // `if (config !== undefined)`) — nothing else to assert here without a
+    // real ntfy endpoint; the non-throw above is the behavior under test.
   });
 });
 
