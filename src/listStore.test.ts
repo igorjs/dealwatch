@@ -142,6 +142,21 @@ describe("upsertList", () => {
     const object = await env.LIST.get(key);
     expect(await object?.text()).toBe("{ not valid json");
   });
+
+  it("throws CorruptListFileError when the existing object is syntactically valid JSON but doesn't match ListItemSchema", async () => {
+    // Arrange: valid JSON, wrong shape (a status value ListItemSchema
+    // rejects) — proves reads are zod-validated, not just JSON.parse'd.
+    const key = uniqueKey();
+    await env.LIST.put(
+      key,
+      JSON.stringify({ "deal-1": { status: "not-a-real-status" } }),
+    );
+
+    // Act + Assert
+    await expect(upsertList(env.LIST, [deal()], key)).rejects.toThrow(
+      CorruptListFileError,
+    );
+  });
 });
 
 describe("readList", () => {
