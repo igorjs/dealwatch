@@ -1,34 +1,33 @@
 # Dealwatch
 
-A personal half-price grocery alert pipeline. It watches Woolworths, Coles, and
-Aldi for specials, matches them against a keyword watchlist, appends matches to
-a local `shopping-list.json` grouped by category, and pushes an alert via ntfy.
-Built to run on a Raspberry Pi, on a timer, doing one pass per run.
+A personal half-price grocery alert pipeline. It watches Woolworths, Coles,
+and Aldi for specials, matches them against a keyword watchlist, writes
+matches to a shopping list in R2, and pushes an alert via ntfy. It runs as a
+single Cloudflare Worker, fired by a Cron Trigger, doing one pass over all
+three stores per invocation.
 
 ## Quick start
 
-1. Install Deno via [mise](https://mise.jdx.dev/): `mise install`
-2. Copy the example config and fill in your own values:
+1. Install dependencies:
    ```
-   cp config.example.json config.local.json
+   npm install
    ```
-   Set your watchlist terms, your ntfy topic URL, and (once captured) each
-   store's request profile.
-3. Run the tests:
+2. Run the tests:
    ```
-   deno task test
+   npm test
    ```
-4. Run a pass:
+3. Run the Worker locally:
    ```
-   deno task run config.local.json dealwatch.db
+   npm run dev
    ```
 
 For agent/contributor guidance (layout, conventions, recovery notes) see
 `AGENTS.md`.
 
-## Running on the Pi
+## Deploying
 
-See `deploy/README.md` for the systemd service and timer setup.
+See `deploy/README.md` for the full walkthrough: provisioning D1 and R2,
+setting Worker secrets, and running `npm run deploy`.
 
 ## Note
 

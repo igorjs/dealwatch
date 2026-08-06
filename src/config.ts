@@ -25,7 +25,8 @@ export const watchlist: Watch[] = [
 export const storeProfiles = {
   aldi: AldiStoreProfileSchema.parse({
     // Placeholder store code — replace with your local Aldi store's
-    // servicePoint before deploying. See scripts/STORE-CAPTURE.md.
+    // servicePoint before deploying (find it in the Aldi site's own
+    // product-search requests via DevTools).
     servicePoint: "G452",
     categoryKeys: [
       "1588161426952145", // Super Savers
