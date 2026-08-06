@@ -186,6 +186,32 @@ describe("fetch: POST /run", () => {
     const allItems = Object.values(grouped).flat();
     expect(allItems.some((item) => item.url === dealUrl)).toBe(true);
   });
+
+  it("returns a 500 with a logged, non-throwing error when runOnePass throws, instead of an unhandled exception", async () => {
+    // Arrange: authed, but launchFn rejects (e.g. Browser Rendering
+    // unavailable) — unlike scheduled (which has no response to send and
+    // so only logs + best-effort crash-notifies), a POST /run caller is
+    // waiting on a response, so this must become a clean 500, not an
+    // uncaught throw out of the fetch handler.
+    const consoleErrorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+    const handler = createHandler({
+      launchFn: vi.fn().mockRejectedValue(new Error("Browser Rendering unavailable")),
+    });
+    const request = authedRequest("/run", { method: "POST" });
+    const ctx = createExecutionContext();
+
+    // Act
+    const response = await handler.fetch!(request, testWorkerEnv(), ctx);
+    await waitOnExecutionContext(ctx);
+
+    // Assert: 500, JSON body names the failure, and it was logged.
+    expect(response.status).toBe(500);
+    const body = (await response.json()) as { error: string };
+    expect(body.error).toContain("Browser Rendering unavailable");
+    expect(consoleErrorSpy).toHaveBeenCalled();
+
+    consoleErrorSpy.mockRestore();
+  });
 });
 
 describe("scheduled: end-to-end across all three sources", () => {
@@ -338,6 +364,78 @@ describe("scheduled: end-to-end across all three sources", () => {
     // catch block skips the crash-notify push entirely (see src/index.ts:
     // `if (config !== undefined)`) — nothing else to assert here without a
     // real ntfy endpoint; the non-throw above is the behavior under test.
+  });
+
+  it("best-effort crash-notify pushes when config built fine but something downstream throws", async () => {
+    // Arrange: buildConfigFn succeeds (a real topicUrl exists), but
+    // launchFn rejects — this is the branch the buildConfig-throws test
+    // above does NOT cover (there, config stays undefined and no push is
+    // even attempted). `scheduled`'s catch block calls the real `push()`
+    // directly (no injectable seam), so the network boundary under test is
+    // the global `fetch` it uses internally.
+    const fetchSpy = vi.fn().mockResolvedValue(new Response(null, { status: 200 }));
+    vi.stubGlobal("fetch", fetchSpy);
+    const consoleErrorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+    const handler = createHandler({
+      launchFn: vi.fn().mockRejectedValue(new Error("Browser Rendering unavailable")),
+    });
+    const controller = createScheduledController();
+    const ctx = createExecutionContext();
+
+    try {
+      // Act + Assert: resolves (never rethrows) despite the downstream failure.
+      await expect(
+        handler.scheduled!(controller, testWorkerEnv(), ctx),
+      ).resolves.toBeUndefined();
+      await waitOnExecutionContext(ctx);
+
+      // Assert: the real push() fired once, to the configured ntfy topic,
+      // with a message naming the underlying error.
+      expect(fetchSpy).toHaveBeenCalledTimes(1);
+      const [pushedUrl, pushedInit] = fetchSpy.mock.calls[0] as [string, RequestInit];
+      expect(pushedUrl).toBe("https://ntfy.sh/dealwatch-test-topic");
+      expect(String(pushedInit.body)).toContain("crashed");
+      expect(String(pushedInit.body)).toContain("Browser Rendering unavailable");
+    } finally {
+      vi.unstubAllGlobals();
+      consoleErrorSpy.mockRestore();
+    }
+  });
+
+  it("swallows a crash-notify push failure instead of rethrowing it", async () => {
+    // Arrange: both launchFn AND the crash-notify push itself fail — the
+    // secondary push failure must be logged and swallowed, not let escape
+    // scheduled() as an unhandled rejection.
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(new Response(null, { status: 500 })));
+    const consoleErrorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+    const handler = createHandler({
+      launchFn: vi.fn().mockRejectedValue(new Error("Browser Rendering unavailable")),
+    });
+    const controller = createScheduledController();
+    const ctx = createExecutionContext();
+
+    try {
+      // Act + Assert: still resolves, even though the crash-notify push
+      // itself failed (a 500 makes push() throw, per src/push.ts).
+      await expect(
+        handler.scheduled!(controller, testWorkerEnv(), ctx),
+      ).resolves.toBeUndefined();
+      await waitOnExecutionContext(ctx);
+
+      // Assert: both the original failure and the secondary push failure
+      // were logged.
+      expect(consoleErrorSpy).toHaveBeenCalledWith(
+        "dealwatch: uncaught error during scheduled run:",
+        expect.anything(),
+      );
+      expect(consoleErrorSpy).toHaveBeenCalledWith(
+        "dealwatch: crash-notify push also failed:",
+        expect.anything(),
+      );
+    } finally {
+      vi.unstubAllGlobals();
+      consoleErrorSpy.mockRestore();
+    }
   });
 });
 

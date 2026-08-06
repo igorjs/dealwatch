@@ -150,8 +150,18 @@ export function createHandler(runOptions: RunOptions = {}): ExportedHandler<Env>
         if (!(await checkAuth(req, env))) {
           return new Response("unauthorized", { status: 401 });
         }
-        const summary = await runOnePass(env, runOptions);
-        return Response.json(summary);
+        // Unlike `scheduled` (which has nothing to answer and so only logs
+        // + best-effort crash-notifies), a caller here is waiting on a
+        // response — an uncaught throw must still become a clear 500, not
+        // an unhandled worker error with no logged cause.
+        try {
+          const summary = await runOnePass(env, runOptions);
+          return Response.json(summary);
+        } catch (error) {
+          console.error("dealwatch: POST /run failed:", error);
+          const message = error instanceof Error ? error.message : String(error);
+          return Response.json({ error: message }, { status: 500 });
+        }
       }
 
       if (req.method === "GET" && url.pathname === "/health") {

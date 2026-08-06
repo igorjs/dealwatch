@@ -123,7 +123,12 @@ export type SourceResult<T, R> =
  * A thrown/rejected `fn` for one source does not stop the loop; it is
  * captured as a `"rejected"` result and the next source still runs, so the
  * caller (the pipeline) can isolate per-source failures the way v1's
- * `Promise.allSettled` did.
+ * `Promise.allSettled` did. `browser.newPage()` itself is inside the same
+ * try/catch as `fn` (not a separate, unguarded step before it): a page
+ * failing to open — a real failure mode, not a hypothetical one, given
+ * Browser Rendering's own concurrent-session limits — is exactly the kind
+ * of per-source failure this function exists to isolate, not one that
+ * should abort every other source's run.
  */
 export async function withSourcesSerial<T, R>(
   sources: readonly T[],
@@ -133,14 +138,15 @@ export async function withSourcesSerial<T, R>(
   const results: SourceResult<T, R>[] = [];
 
   for (const source of sources) {
-    const page = await browser.newPage();
+    let page: PageLike | undefined;
     try {
+      page = await browser.newPage();
       const value = await fn(source, page);
       results.push({ source, status: "fulfilled", value });
     } catch (reason) {
       results.push({ source, status: "rejected", reason });
     } finally {
-      await page.close();
+      await page?.close();
     }
   }
 
