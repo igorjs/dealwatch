@@ -1,4 +1,4 @@
-import type { Source } from "../types.ts";
+import type { Source } from "../types";
 
 /**
  * The shared grocery categories DealWatch groups deals by, independent of
