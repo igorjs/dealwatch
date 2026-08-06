@@ -1,3 +1,4 @@
+import { z } from "zod";
 import { type Deal, type ListItem, ListItemSchema } from "./types";
 
 /** The production R2 key the shopping list is stored under. */
@@ -21,6 +22,17 @@ export class CorruptListFileError extends Error {
 type ListStore = Record<string, ListItem>;
 
 /**
+ * Validates the R2 object's shape against `ListItemSchema` (zod at every
+ * boundary, never cast — R2 is an external trust boundary just like a D1
+ * row: the object could be hand-edited, corrupted, or written by an older,
+ * incompatible schema version). A JSON-syntax error and a shape mismatch are
+ * both reported as `CorruptListFileError`; callers don't need to
+ * distinguish "not JSON" from "JSON but the wrong shape", both mean the
+ * object is unusable.
+ */
+const ListStoreSchema = z.record(z.string(), ListItemSchema);
+
+/**
  * Reads the store at `key`. Returns `{}` when the object is absent. Throws
  * `CorruptListFileError` when the object exists but its body isn't valid
  * JSON matching the expected shape.
@@ -31,10 +43,9 @@ async function readStore(bucket: R2Bucket, key: string): Promise<ListStore> {
     return {};
   }
 
-  let raw: string;
   try {
-    raw = await object.text();
-    return JSON.parse(raw) as ListStore;
+    const raw = await object.text();
+    return ListStoreSchema.parse(JSON.parse(raw));
   } catch (cause) {
     throw new CorruptListFileError(key, cause);
   }
