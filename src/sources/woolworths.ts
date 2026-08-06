@@ -1,7 +1,8 @@
 import { z } from "zod";
-import { SourceError } from "./errors.ts";
-import type { RawDeal, StoreProfile } from "../types.ts";
-import { toCents } from "../core/price.ts";
+import { SourceError } from "./errors";
+import type { PageLike } from "../browser";
+import type { RawDeal, StoreProfile } from "../types";
+import { toCents } from "../core/price";
 
 /**
  * PLACEHOLDER SCHEMA. The Woolworths half-price request is captured (plan's
@@ -70,14 +71,33 @@ export function parseWoolworthsPayload(json: unknown): RawDeal[] {
 const WOOLWORTHS_HALF_PRICE_CATEGORY_ID = "specialsgroup.3676";
 
 /**
- * The captured half-price browse request body (plan's Capture notes):
- * category id for the "Half Price" specials group, page 1 of 24 results,
- * sorted by trader relevance, no extra filters.
+ * The human-facing half-price specials page. Navigated first (via
+ * `page.goto`) purely to establish a real Akamai session with browser-minted
+ * cookies before the in-page category POST runs — Akamai's sensor JS only
+ * runs on a real rendered page, never on a bare POST-only API endpoint, so
+ * this can't be `profile.url` (the category API endpoint) itself. Hardcoded
+ * here rather than sourced from config: which page to warm the session on is
+ * a fetcher-internal implementation detail, not something a deployer needs to
+ * configure.
  */
-function buildWoolworthsRequestBody(): Record<string, unknown> {
+const WOOLWORTHS_HALF_PRICE_PAGE_URL =
+  "https://www.woolworths.com.au/shop/browse/specials/half-price";
+
+/** Result of `attempt()`, one browse/category API call, page and body/status included for logging/errors. */
+interface EvaluatedResponse {
+  status: number;
+  body: unknown;
+}
+
+/**
+ * The captured half-price browse request body (plan's Capture notes):
+ * category id for the "Half Price" specials group, page `pageNumber` of
+ * `pageSize` results, sorted by trader relevance, no extra filters.
+ */
+function buildWoolworthsRequestBody(pageNumber: number): Record<string, unknown> {
   return {
     categoryId: WOOLWORTHS_HALF_PRICE_CATEGORY_ID,
-    pageNumber: 1,
+    pageNumber,
     pageSize: 24,
     sortType: "TraderRelevance",
     categoryVersion: "v2",
@@ -86,45 +106,139 @@ function buildWoolworthsRequestBody(): Record<string, unknown> {
 }
 
 /**
- * Posts the captured half-price browse request against `profile.url` with
- * `profile.headers` (auth token + Akamai bot cookies per the Capture notes),
- * checks for a non-2xx response and a JSON body, and maps the result via
- * parseWoolworthsPayload. Throws the shared SourceError on a non-2xx
- * response (403/429/503) or a body that isn't valid JSON (a bot-challenge
- * or outage HTML page), so callers get a typed, distinguishable failure
- * instead of a raw fetch/SyntaxError. `fetchFn` is injected (defaults to the
- * global `fetch`) so tests never hit the network.
+ * Defensive upper bound on pages fetched, in case `totalRecordCount` is
+ * missing or absurdly large. At `pageSize: 24` this comfortably covers the
+ * spike-observed ~1624 records (~68 pages) without risking a true runaway
+ * loop against a misbehaving/malicious response.
  */
-export async function fetchWoolworths(
+const MAX_PAGES = 90;
+
+/**
+ * Fetches every page of the Woolworths half-price browse/category listing
+ * via Browser Rendering, and returns the merged result as RawDeal[].
+ *
+ * Two-step session dance (a bare cross-origin fetch to the category API
+ * 400s on missing params without ever establishing a session — proven by a
+ * prior spike; navigating a real page first and then POSTing from inside
+ * that page's context reaches 200 with real data):
+ *   1. `page.goto` the human-facing half-price page, establishing a real
+ *      Akamai session with browser-minted cookies.
+ *   2. `page.evaluate` an in-page `fetch(..., { credentials: "include" })`
+ *      against `profile.url` (the category API endpoint), which
+ *      automatically carries the browser's own session cookies the same way
+ *      a real user's browser would — no headers need to be supplied by the
+ *      Worker.
+ *
+ * Pages through `pageNumber` (starting at 1), collecting `bundles` across
+ * pages until the running product count reaches the first page's
+ * `totalRecordCount`, or `MAX_PAGES` is hit, whichever comes first. Throws
+ * the shared `SourceError` on a failed navigation, a non-2xx in-page fetch,
+ * or an unparseable/malformed body — never a raw error.
+ */
+export async function fetchWoolworthsViaBrowser(
+  page: PageLike,
   profile: StoreProfile,
-  fetchFn: typeof fetch = fetch,
 ): Promise<RawDeal[]> {
-  const response = await fetchFn(profile.url, {
-    method: "POST",
-    headers: {
-      "content-type": "application/json",
-      ...profile.headers,
-    },
-    body: JSON.stringify(buildWoolworthsRequestBody()),
+  const navigation = await page.goto(WOOLWORTHS_HALF_PRICE_PAGE_URL, {
+    waitUntil: "domcontentloaded",
   });
 
-  if (!response.ok) {
+  if (!navigation || navigation.status() < 200 || navigation.status() >= 300) {
     throw new SourceError(
       "woolworths",
-      `request failed: ${response.status} ${response.statusText}`.trim(),
+      `navigation to the half-price page failed: ${
+        navigation ? navigation.status() : "no response"
+      }`,
     );
   }
 
-  let json: unknown;
-  try {
-    json = await response.json();
-  } catch (cause) {
-    throw new SourceError(
-      "woolworths",
-      "returned a non-JSON body (likely a bot challenge or outage page)",
-      { cause },
+  const bundles: unknown[] = [];
+  let totalRecordCount: number | undefined;
+  let collectedProductCount = 0;
+
+  for (let pageNumber = 1; pageNumber <= MAX_PAGES; pageNumber++) {
+    const requestBody = buildWoolworthsRequestBody(pageNumber);
+
+    const result = await page.evaluate<EvaluatedResponse>(
+      async (...args: unknown[]) => {
+        const [apiUrl, body] = args as [string, Record<string, unknown>];
+        // This callback runs inside the browser page (Browser Rendering),
+        // never inside the Worker, so `fetch` here is the DOM/browser fetch
+        // (supports `credentials`), not the Workers-runtime `fetch` ambient
+        // type this file otherwise sees (which has no `credentials` field).
+        // Cast through a minimal local signature to type-check against the
+        // right contract without depending on `lib.dom.d.ts` being present.
+        type BrowserFetch = (
+          input: string,
+          init: {
+            method: string;
+            headers: Record<string, string>;
+            body: string;
+            credentials: string;
+          },
+        ) => Promise<{ status: number; json(): Promise<unknown> }>;
+        const browserFetch = fetch as unknown as BrowserFetch;
+        const res = await browserFetch(apiUrl, {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify(body),
+          credentials: "include",
+        });
+        let parsedBody: unknown;
+        try {
+          parsedBody = await res.json();
+        } catch {
+          parsedBody = undefined;
+        }
+        return { status: res.status, body: parsedBody };
+      },
+      profile.url,
+      requestBody,
     );
+
+    if (result.status < 200 || result.status >= 300) {
+      throw new SourceError(
+        "woolworths",
+        `category API request failed: ${result.status} (page ${pageNumber})`,
+      );
+    }
+
+    if (result.body === undefined) {
+      throw new SourceError(
+        "woolworths",
+        `category API returned a non-JSON body (page ${pageNumber}), likely a bot challenge or outage page`,
+      );
+    }
+
+    let parsedPage: z.infer<typeof WoolworthsPayloadSchema>;
+    try {
+      parsedPage = WoolworthsPayloadSchema.parse(result.body);
+    } catch (cause) {
+      throw new SourceError(
+        "woolworths",
+        `category API returned a malformed payload (page ${pageNumber})`,
+        { cause },
+      );
+    }
+
+    if (pageNumber === 1) {
+      totalRecordCount = parsedPage.totalRecordCount;
+    }
+
+    bundles.push(...parsedPage.bundles);
+    collectedProductCount += parsedPage.bundles.reduce(
+      (sum, bundle) => sum + bundle.products.length,
+      0,
+    );
+
+    const reachedTotal = totalRecordCount !== undefined &&
+      collectedProductCount >= totalRecordCount;
+    // An empty page (no products at all) means there's nothing left to
+    // page through, regardless of what totalRecordCount claims.
+    const exhausted = parsedPage.bundles.every((bundle) => bundle.products.length === 0);
+
+    if (reachedTotal || exhausted) break;
   }
 
-  return parseWoolworthsPayload(json);
+  return parseWoolworthsPayload({ bundles, totalRecordCount });
 }
