@@ -1,18 +1,18 @@
 import { z } from "zod";
-import type { AldiStoreProfile, RawDeal } from "../types.ts";
-import { toCents } from "../core/price.ts";
+import type { AldiStoreProfile, RawDeal } from "../types";
+import { toCents } from "../core/price";
+import { SourceError } from "./errors";
+import type { PageLike } from "../browser";
 
 /**
- * Thrown by fetchAldi on a non-2xx response or a body that isn't valid JSON
- * (e.g. a bot-challenge or outage HTML page), so callers get a typed,
- * distinguishable failure instead of a raw fetch/SyntaxError.
+ * `page.evaluate` callbacks below run inside the remote browser page's DOM
+ * context, not this Worker's — but this file compiles under the Worker's
+ * `tsconfig.json`, whose `lib` is `ES2022` only (no `dom`), since the rest of
+ * the codebase never touches DOM globals. This ambient declaration exists so
+ * the `document.body.innerText` reference inside the `evaluate` callback
+ * type-checks; it's never evaluated in this file's own (Worker) runtime.
  */
-export class AldiSourceError extends Error {
-  constructor(message: string, options?: ErrorOptions) {
-    super(message, options);
-    this.name = "AldiSourceError";
-  }
-}
+declare const document: { body: { innerText: string } };
 
 /**
  * PLACEHOLDER SCHEMA. No real Aldi product-search response has been
@@ -80,56 +80,118 @@ export function parseAldiPayload(json: unknown): RawDeal[] {
 }
 
 const ALDI_PRODUCT_SEARCH_URL = "https://api.aldi.com.au/v3/product-search";
+const ALDI_PAGE_SIZE = 30;
+/**
+ * Defensive cap on pages fetched per categoryKey, in case `meta.pagination.
+ * totalCount` is ever missing/wrong and the offset-vs-totalCount stopping
+ * condition can't terminate on its own. 20 pages * 30/page = 600 products,
+ * comfortably above any plausible specials category size.
+ */
+const ALDI_MAX_PAGES_PER_CATEGORY = 20;
 
 function buildAldiRequestUrl(
   categoryKey: string,
   servicePoint: string,
+  offset: number,
 ): string {
   return `${ALDI_PRODUCT_SEARCH_URL}?currency=AUD&serviceType=walk-in` +
-    `&categoryKey=${encodeURIComponent(categoryKey)}&limit=30&offset=0` +
+    `&categoryKey=${encodeURIComponent(categoryKey)}&limit=${ALDI_PAGE_SIZE}&offset=${offset}` +
     `&sort=relevance&servicePoint=${encodeURIComponent(servicePoint)}`;
 }
 
+/** One page's worth of parsed results, plus the total count reported for the category (if any). */
+interface AldiPageResult {
+  deals: RawDeal[];
+  totalCount: number | undefined;
+}
+
 /**
- * Fetches Aldi's public, unauthenticated product-search endpoint once per
- * configured `categoryKey` and merges the results, de-duplicating by
- * RawDeal.url so a product present under more than one category (e.g. both
- * specials categories) isn't emitted twice. No captured auth profile or
- * cookies needed, unlike Coles/Woolworths (plan's Aldi capture notes).
- *
- * Throws AldiSourceError on a non-2xx response or a body that isn't valid
- * JSON (e.g. a bot-challenge/outage HTML page). `fetchFn` is injected
- * (defaults to the global `fetch`) so tests never hit the network.
+ * Reads the JSON body of a page that has just navigated directly to a JSON
+ * API endpoint: a browser rendering a raw JSON response renders it as the
+ * page's plain-text body, so `document.body.innerText` round-trips back to
+ * the original payload via `JSON.parse`. Wraps a parse failure (or any
+ * shape rejected by `parseAldiPayload`'s Zod schema) in a `SourceError` so
+ * callers never see a raw `SyntaxError`/`ZodError`.
  */
-export async function fetchAldi(
+async function readAldiJsonPage(
+  page: PageLike,
+  url: string,
+): Promise<AldiPageResult> {
+  const response = await page.goto(url, { waitUntil: "domcontentloaded" });
+
+  if (!response || response.status() < 200 || response.status() >= 300) {
+    throw new SourceError(
+      "aldi",
+      `product-search navigation failed: ${response ? response.status() : "no response"}`,
+    );
+  }
+
+  let json: unknown;
+  try {
+    json = await page.evaluate(() => JSON.parse(document.body.innerText));
+  } catch (cause) {
+    throw new SourceError(
+      "aldi",
+      "product-search page body was not valid JSON (likely a bot challenge or outage page)",
+      { cause },
+    );
+  }
+
+  try {
+    const payload = AldiPayloadSchema.parse(json);
+    return {
+      deals: parseAldiPayload(payload),
+      totalCount: payload.meta?.pagination.totalCount,
+    };
+  } catch (cause) {
+    throw new SourceError(
+      "aldi",
+      "product-search response did not match the expected shape",
+      { cause },
+    );
+  }
+}
+
+/**
+ * Fetches Aldi's product-search endpoint via a Browser Rendering `PageLike`,
+ * once per configured `categoryKey`, paging through `offset` until the
+ * category is exhausted, and merges the results across both categories and
+ * all pages, de-duplicating by `RawDeal.url` so a product present under more
+ * than one category (or returned again on a later page) isn't emitted twice.
+ *
+ * A real browser is required here, not a plain `fetch`: `api.aldi.com.au`
+ * sits behind Akamai bot-protection that 403s a plain Worker fetch (even
+ * with a spoofed User-Agent) — only a real browser session, which mints
+ * Aldi's httpOnly `_abck` cookie, gets through (spike-proven). `page.goto`
+ * navigates straight to the JSON API URL; `page.evaluate` pulls the parsed
+ * JSON out of the rendered page body.
+ *
+ * Throws `SourceError("aldi", ...)` on a non-2xx navigation or a body that
+ * isn't valid JSON / doesn't match the expected shape (a bot-challenge or
+ * outage page), so callers get a typed, distinguishable failure.
+ */
+export async function fetchAldiViaBrowser(
+  page: PageLike,
   profile: AldiStoreProfile,
-  fetchFn: typeof fetch = fetch,
 ): Promise<RawDeal[]> {
   const merged = new Map<string, RawDeal>();
 
   for (const categoryKey of profile.categoryKeys) {
-    const url = buildAldiRequestUrl(categoryKey, profile.servicePoint);
-    const response = await fetchFn(url);
+    let offset = 0;
 
-    if (!response.ok) {
-      throw new AldiSourceError(
-        `Aldi product-search request failed: ${response.status} ${response.statusText}`
-          .trim(),
-      );
-    }
+    for (let pageCount = 0; pageCount < ALDI_MAX_PAGES_PER_CATEGORY; pageCount++) {
+      const url = buildAldiRequestUrl(categoryKey, profile.servicePoint, offset);
+      const { deals, totalCount } = await readAldiJsonPage(page, url);
 
-    let json: unknown;
-    try {
-      json = await response.json();
-    } catch (cause) {
-      throw new AldiSourceError(
-        "Aldi product-search returned a non-JSON body (likely a bot challenge or outage page)",
-        { cause },
-      );
-    }
+      for (const deal of deals) {
+        merged.set(deal.url, deal);
+      }
 
-    for (const deal of parseAldiPayload(json)) {
-      merged.set(deal.url, deal);
+      if (deals.length === 0) break;
+
+      offset += ALDI_PAGE_SIZE;
+
+      if (totalCount === undefined || offset >= totalCount) break;
     }
   }
 
