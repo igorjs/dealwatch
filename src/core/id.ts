@@ -1,4 +1,4 @@
-import type { Source } from "../types.ts";
+import type { Source } from "../types";
 
 /** The default port for each scheme whose port is dropped during canonicalization. */
 const DEFAULT_PORTS: Record<string, string> = {

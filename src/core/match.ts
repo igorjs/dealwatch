@@ -1,4 +1,4 @@
-import type { Deal, Watch } from "../types.ts";
+import type { Deal, Watch } from "../types";
 
 /** Escapes regex metacharacters so a watch term is matched literally, never as a pattern. */
 function escapeForRegex(term: string): string {
