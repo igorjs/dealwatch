@@ -1,5 +1,7 @@
 import {
   AldiStoreProfileSchema,
+  type Config,
+  ConfigSchema,
   StoreProfileSchema,
   type Watch,
   WatchSchema,
@@ -37,3 +39,17 @@ export const storeProfiles = {
     url: "https://www.woolworths.com.au/apis/ui/browse/category",
   }),
 };
+
+/**
+ * Assembles the final, validated Config from the bundled watchlist and store
+ * profiles plus the one secret that belongs to this domain: the ntfy topic
+ * URL. `API_TOKEN` is deliberately not read here — it authenticates the HTTP
+ * trigger itself, not the pipeline's config, so it stays in the HTTP handler.
+ */
+export function buildConfig(env: Pick<Env, "NTFY_TOPIC_URL">): Config {
+  return ConfigSchema.parse({
+    watchlist,
+    ntfy: { topicUrl: env.NTFY_TOPIC_URL },
+    stores: storeProfiles,
+  });
+}

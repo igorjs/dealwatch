@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { storeProfiles, watchlist } from "./config";
+import { buildConfig, storeProfiles, watchlist } from "./config";
 import {
   AldiStoreProfileSchema,
   StoreProfileSchema,
@@ -54,5 +54,20 @@ describe("storeProfiles", () => {
     expect(result.url).toBe(
       "https://www.coles.com.au/on-special?filter_Special=halfprice",
     );
+  });
+});
+
+describe("buildConfig", () => {
+  it("assembles a Config from the bundled watchlist, store profiles, and env's NTFY_TOPIC_URL", () => {
+    // Arrange
+    const env = { NTFY_TOPIC_URL: "https://ntfy.sh/some-topic" };
+
+    // Act
+    const config = buildConfig(env);
+
+    // Assert
+    expect(config.ntfy.topicUrl).toBe("https://ntfy.sh/some-topic");
+    expect(config.watchlist).toEqual(watchlist);
+    expect(config.stores).toEqual(storeProfiles);
   });
 });
