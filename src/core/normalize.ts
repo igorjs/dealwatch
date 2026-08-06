@@ -1,7 +1,7 @@
-import { type Deal, DealSchema, type RawDeal } from "../types.ts";
-import { stableId } from "./id.ts";
-import { toCategory } from "./category.ts";
-import { computeDiscountPercent } from "./price.ts";
+import { type Deal, DealSchema, type RawDeal } from "../types";
+import { stableId } from "./id";
+import { toCategory } from "./category";
+import { computeDiscountPercent } from "./price";
 
 /**
  * Builds a Deal from a source's RawDeal: assigns a stable id, maps the raw
