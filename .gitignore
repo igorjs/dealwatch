@@ -3,3 +3,10 @@
 node_modules/
 .wrangler/
 dist/
+
+# Local secrets, never commit (Worker secrets live in `wrangler secret` / CI secrets)
+.dev.vars
+.dev.vars.*
+.env
+.env.*
+config.local.json
