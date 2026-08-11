@@ -9,8 +9,7 @@
     "cf-typegen": "wrangler types"
   },
   "dependencies": {
-    "zod": "4.4.3",
-    "@cloudflare/puppeteer": "1.2.0"
+    "zod": "4.4.3"
   },
   "devDependencies": {
     "wrangler": "4.118.0",
