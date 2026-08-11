@@ -3,18 +3,20 @@
 // handler and three bearer-gated HTTP routes on `fetch`. There is no CLI
 // entry point in v2 (that was v1's `src/main.ts`, now retired): a Worker has
 // no process to exit and no `Deno.args`, just handlers that return.
-import { launch, type BrowserSession } from "./browser";
+import { launch, type BrowserSession, type SourceResult } from "./browser";
 import { buildConfig } from "./config";
 import { CorruptListFileError, LIST_KEY, readList } from "./listStore";
 import { push } from "./push";
-import { runPipeline, type PipelineSummary } from "./pipeline";
+import { runPipeline, processSourceResults, type PipelineSummary } from "./pipeline";
 import { getHealth } from "./store";
-import type { Config } from "./types";
+import { IngestBodySchema, type Config, type RawDeal, type Source } from "./types";
 
 /**
  * Injection seam for the config/browser/runPipeline sequence shared by
- * `scheduled` and `POST /run`. Every field defaults to the real
- * implementation; tests override `launchFn`/`runPipelineFn` to avoid ever
+ * `scheduled` and `POST /run`, plus `processSourceResultsFn` for
+ * `POST /ingest` (which needs no browser at all, since its results already
+ * arrived fetched). Every field defaults to the real implementation; tests
+ * override `launchFn`/`runPipelineFn`/`processSourceResultsFn` to avoid ever
  * driving a real Browser Rendering session — the same seam
  * `src/pipeline.test.ts` uses for `PipelineDeps.fetchers`.
  */
@@ -22,7 +24,24 @@ export type RunOptions = {
   buildConfigFn?: (env: Pick<Env, "NTFY_TOPIC_URL">) => Config;
   launchFn?: (binding: Env["BROWSER"]) => Promise<BrowserSession>;
   runPipelineFn?: typeof runPipeline;
+  processSourceResultsFn?: typeof processSourceResults;
 };
+
+/**
+ * Upper bound on a `POST /ingest` request body, checked twice: once against
+ * the `Content-Length` header before the body is read at all (cheap, but a
+ * client can lie about or omit it), and once against the body's actual
+ * encoded byte length after reading it (the real check). See the route's own
+ * doc comment for why this cap exists.
+ */
+const MAX_INGEST_BODY_BYTES = 5 * 1024 * 1024;
+
+/**
+ * Upper bound on the number of deals a single source result in a
+ * `POST /ingest` body may carry. See the route's own doc comment for why
+ * this cap exists.
+ */
+const MAX_DEALS_PER_SOURCE = 5000;
 
 /**
  * Builds config, launches a Browser Rendering session, runs one pipeline
@@ -159,6 +178,101 @@ export function createHandler(runOptions: RunOptions = {}): ExportedHandler<Env>
           return Response.json(summary);
         } catch (error) {
           console.error("dealwatch: POST /run failed:", error);
+          const message = error instanceof Error ? error.message : String(error);
+          return Response.json({ error: message }, { status: 500 });
+        }
+      }
+
+      /**
+       * Receives one Actions Playwright run's per-source fetch results and
+       * hands them straight to `processSourceResults`, the same "process"
+       * half of the pipeline `POST /run` drives via `runPipeline` (see
+       * `src/pipeline.ts`), just fed results captured by a GitHub Actions job
+       * instead of a Browser Rendering session launched by this Worker.
+       *
+       * `API_TOKEN` is the only gate on this route. A leaked token would
+       * otherwise let a caller poison the shopping list with arbitrary R2
+       * writes, or flood D1's `seen_deal`/`source_health` tables, just by
+       * POSTing an oversized or malformed body, since there is no per-source
+       * upstream validation the way a real store scrape would have. The size
+       * guards below (`MAX_INGEST_BODY_BYTES`, checked both before and after
+       * reading the body) and the per-source deal cap (`MAX_DEALS_PER_SOURCE`)
+       * bound that blast radius; they do not eliminate it. That residual
+       * risk is accepted here: this is a personal, single-user tool, not a
+       * multi-tenant service worth a heavier auth model.
+       */
+      if (req.method === "POST" && url.pathname === "/ingest") {
+        if (!(await checkAuth(req, env))) {
+          return new Response("unauthorized", { status: 401 });
+        }
+
+        try {
+          // Size guard, before reading the body at all: cheap, but not a
+          // guarantee on its own, since a caller can lie about or omit
+          // Content-Length. Its absence is not itself a reason to reject; a
+          // chunked client legitimately omits it.
+          const contentLength = req.headers.get("Content-Length");
+          if (contentLength !== null && Number(contentLength) > MAX_INGEST_BODY_BYTES) {
+            return Response.json({ error: "body too large" }, { status: 400 });
+          }
+
+          // Size guard, after reading: the real check, measured against the
+          // body actually received. Byte length via TextEncoder, not
+          // `.length`, so multi-byte characters count correctly.
+          const bodyText = await req.text();
+          if (new TextEncoder().encode(bodyText).byteLength > MAX_INGEST_BODY_BYTES) {
+            return Response.json({ error: "body too large" }, { status: 400 });
+          }
+
+          let parsedJson: unknown;
+          try {
+            parsedJson = JSON.parse(bodyText);
+          } catch {
+            return Response.json({ error: "invalid JSON" }, { status: 400 });
+          }
+
+          const parsedBody = IngestBodySchema.safeParse(parsedJson);
+          if (!parsedBody.success) {
+            return Response.json({ error: "invalid request body" }, { status: 400 });
+          }
+          const { results: ingestResults } = parsedBody.data;
+
+          const oversizedSource = ingestResults.some(
+            (result) =>
+              result.status === "fulfilled" && result.deals.length > MAX_DEALS_PER_SOURCE,
+          );
+          if (oversizedSource) {
+            return Response.json(
+              { error: "too many deals in one source result" },
+              { status: 400 },
+            );
+          }
+
+          // Reshape the wire contract (`deals`/`reason` per types.ts's
+          // SourceResult) into the fulfilled/rejected shape
+          // `processSourceResults` expects (`value`/`reason`, mirroring
+          // Promise.allSettled, see browser.ts's SourceResult).
+          const results: SourceResult<Source, RawDeal[]>[] = ingestResults.map((result) =>
+            result.status === "fulfilled"
+              ? { source: result.source, status: "fulfilled", value: result.deals }
+              : { source: result.source, status: "rejected", reason: result.reason }
+          );
+
+          const buildConfigFn = runOptions.buildConfigFn ?? buildConfig;
+          const processSourceResultsFn = runOptions.processSourceResultsFn ??
+            processSourceResults;
+          const summary = await processSourceResultsFn(
+            {
+              now: new Date(),
+              config: buildConfigFn(env),
+              db: env.DB,
+              bucket: env.LIST,
+            },
+            results,
+          );
+          return Response.json(summary);
+        } catch (error) {
+          console.error("dealwatch: POST /ingest failed:", error);
           const message = error instanceof Error ? error.message : String(error);
           return Response.json({ error: message }, { status: 500 });
         }
