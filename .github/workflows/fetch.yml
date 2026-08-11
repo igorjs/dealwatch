@@ -1,0 +1,34 @@
+# This workflow holds a bearer token (API_TOKEN) for the Worker's ingest endpoint,
+# and this repository is public. The trigger list below is intentionally closed to
+# schedule and workflow_dispatch only: neither can be forced by an untrusted
+# contribution, so a hostile submission can never reach these secrets. Keep the
+# trigger list closed; do not widen it to react to any code review or content event.
+name: Fetch deals
+
+on:
+  schedule:
+    - cron: "0 19 * * 3,6"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: fetch-deals
+  cancel-in-progress: false
+
+jobs:
+  fetch:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: "20"
+      - run: npm --prefix fetcher ci
+      - run: npx --prefix fetcher playwright install --with-deps chromium
+      - run: npm --prefix fetcher start
+        env:
+          API_TOKEN: ${{ secrets.API_TOKEN }}
+          WORKER_INGEST_URL: ${{ secrets.WORKER_INGEST_URL }}
