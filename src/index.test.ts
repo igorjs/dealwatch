@@ -11,7 +11,7 @@ import { createHandler, runOnePass } from "./index";
 import type { BrowserSession, PageLike } from "./browser";
 import { LIST_KEY, readList } from "./listStore";
 import { runPipeline } from "./pipeline";
-import { filterNew, recordAttempt } from "./store";
+import { filterNew, getHealth, recordAttempt } from "./store";
 import type { Config, Deal, RawDeal } from "./types";
 import { normalize } from "./core/normalize";
 
@@ -211,6 +211,305 @@ describe("fetch: POST /run", () => {
     expect(consoleErrorSpy).toHaveBeenCalled();
 
     consoleErrorSpy.mockRestore();
+  });
+});
+
+describe("fetch: POST /ingest", () => {
+  /**
+   * A request-shaped object exposing only what `POST /ingest` actually reads
+   * (`url`, `headers`, `text()`), with `text` swappable for a spy. Lets the
+   * size-guard boundary tests below control the `Content-Length` header and
+   * the bytes `text()` returns independently, and prove the body was never
+   * read at all, without constructing a real multi-megabyte `Request`.
+   */
+  function fakeIngestRequest(
+    headers: HeadersInit,
+    text: () => Promise<string>,
+  ): IncomingRequest {
+    return {
+      method: "POST",
+      url: "https://example.com/ingest",
+      headers: new Headers(headers),
+      text,
+    } as unknown as IncomingRequest;
+  }
+
+  /**
+   * A valid `IngestBody` JSON string padded to exactly `sizeBytes` (measured
+   * the same way the route measures it, via `TextEncoder`), using an extra
+   * `padding` field `IngestBodySchema` silently strips on parse (it has no
+   * `.strict()`). Lets the exact-boundary tests hit a precise byte count
+   * without pasting a multi-megabyte literal into this file.
+   */
+  function ingestBodyPaddedTo(sizeBytes: number): string {
+    const skeleton = { results: [] as unknown[], padding: "" };
+    const baseBytes = new TextEncoder().encode(JSON.stringify(skeleton)).byteLength;
+    skeleton.padding = "a".repeat(sizeBytes - baseBytes);
+    return JSON.stringify(skeleton);
+  }
+
+  /** `count` minimal but schema-valid RawDeals, for the per-source deal cap tests. */
+  function buildRawDeals(count: number): RawDeal[] {
+    return Array.from({ length: count }, (_, index) => ({
+      source: "aldi",
+      title: `Deal ${index}`,
+      url: `https://example.com/deal/${index}`,
+      store: "Aldi Example",
+      department: null,
+      priceCents: 100,
+      wasPriceCents: 200,
+      discountPercent: 50,
+    }));
+  }
+
+  it("returns 401 when the Authorization header is missing", async () => {
+    // Arrange
+    const handler = createHandler();
+    const request = plainRequest("/ingest", { method: "POST" });
+    const ctx = createExecutionContext();
+
+    // Act
+    const response = await handler.fetch!(request, testWorkerEnv(), ctx);
+    await waitOnExecutionContext(ctx);
+
+    // Assert
+    expect(response.status).toBe(401);
+  });
+
+  it("returns 401 (same status as missing) when the bearer token is present but wrong", async () => {
+    // Arrange
+    const handler = createHandler();
+    const request = plainRequest("/ingest", {
+      method: "POST",
+      headers: { Authorization: "Bearer wrong-token" },
+    });
+    const ctx = createExecutionContext();
+
+    // Act
+    const response = await handler.fetch!(request, testWorkerEnv(), ctx);
+    await waitOnExecutionContext(ctx);
+
+    // Assert
+    expect(response.status).toBe(401);
+  });
+
+  it("returns 400 when a valid bearer's body is not valid JSON", async () => {
+    // Arrange
+    const handler = createHandler();
+    const request = authedRequest("/ingest", {
+      method: "POST",
+      body: "{ not valid json",
+    });
+    const ctx = createExecutionContext();
+
+    // Act
+    const response = await handler.fetch!(request, testWorkerEnv(), ctx);
+    await waitOnExecutionContext(ctx);
+
+    // Assert
+    expect(response.status).toBe(400);
+  });
+
+  it("returns 400 when the body fails IngestBodySchema (an unknown source)", async () => {
+    // Arrange
+    const handler = createHandler();
+    const request = authedRequest("/ingest", {
+      method: "POST",
+      body: JSON.stringify({
+        results: [{ source: "kmart", status: "fulfilled", deals: [] }],
+      }),
+    });
+    const ctx = createExecutionContext();
+
+    // Act
+    const response = await handler.fetch!(request, testWorkerEnv(), ctx);
+    await waitOnExecutionContext(ctx);
+
+    // Assert
+    expect(response.status).toBe(400);
+  });
+
+  it("with a valid body, calls the injected processSourceResultsFn with the parsed results and returns 200 with its summary", async () => {
+    // Arrange
+    const dealUrl = `https://example.com/deal/${crypto.randomUUID()}`;
+    const deal: RawDeal = {
+      source: "aldi",
+      title: "Ingest Test Deal",
+      url: dealUrl,
+      store: "Aldi Example",
+      department: null,
+      priceCents: 500,
+      wasPriceCents: 1000,
+      discountPercent: 50,
+    };
+    const summary = { fetched: 1, matched: 1, sourceFailures: [] };
+    const processSourceResultsFn = vi.fn().mockResolvedValue(summary);
+    const handler = createHandler({ processSourceResultsFn });
+    const request = authedRequest("/ingest", {
+      method: "POST",
+      body: JSON.stringify({
+        results: [
+          { source: "aldi", status: "fulfilled", deals: [deal] },
+          { source: "coles", status: "rejected", reason: "timed out" },
+          { source: "woolworths", status: "fulfilled", deals: [] },
+        ],
+      }),
+    });
+    const ctx = createExecutionContext();
+
+    // Act
+    const response = await handler.fetch!(request, testWorkerEnv(), ctx);
+    await waitOnExecutionContext(ctx);
+
+    // Assert: 200 with the summary the fake returned, and the fake was
+    // actually driven with the parsed (and reshaped) results.
+    expect(response.status).toBe(200);
+    const body = await response.json();
+    expect(body).toEqual(summary);
+    expect(processSourceResultsFn).toHaveBeenCalledTimes(1);
+    const [, results] = processSourceResultsFn.mock.calls[0] as [unknown, unknown];
+    expect(results).toEqual([
+      { source: "aldi", status: "fulfilled", value: [deal] },
+      { source: "coles", status: "rejected", reason: "timed out" },
+      { source: "woolworths", status: "fulfilled", value: [] },
+    ]);
+  });
+
+  it("rejects a request whose Content-Length exceeds 5 MB before the body is read", async () => {
+    // Arrange
+    const processSourceResultsFn = vi.fn();
+    const handler = createHandler({ processSourceResultsFn });
+    const textFn = vi.fn();
+    const request = fakeIngestRequest(
+      {
+        Authorization: `Bearer ${API_TOKEN}`,
+        "Content-Length": String(5 * 1024 * 1024 + 1),
+      },
+      textFn,
+    );
+    const ctx = createExecutionContext();
+
+    // Act
+    const response = await handler.fetch!(request, testWorkerEnv(), ctx);
+    await waitOnExecutionContext(ctx);
+
+    // Assert: 400, and neither the body nor the pipeline were ever reached.
+    expect(response.status).toBe(400);
+    expect(textFn).not.toHaveBeenCalled();
+    expect(processSourceResultsFn).not.toHaveBeenCalled();
+  });
+
+  it("accepts and parses a body whose size is exactly at the 5 MB limit", async () => {
+    // Arrange
+    const summary = { fetched: 0, matched: 0, sourceFailures: [] };
+    const processSourceResultsFn = vi.fn().mockResolvedValue(summary);
+    const handler = createHandler({ processSourceResultsFn });
+    const bodyText = ingestBodyPaddedTo(5 * 1024 * 1024);
+    const request = fakeIngestRequest(
+      { Authorization: `Bearer ${API_TOKEN}` },
+      () => Promise.resolve(bodyText),
+    );
+    const ctx = createExecutionContext();
+
+    // Act
+    const response = await handler.fetch!(request, testWorkerEnv(), ctx);
+    await waitOnExecutionContext(ctx);
+
+    // Assert
+    expect(response.status).toBe(200);
+    expect(processSourceResultsFn).toHaveBeenCalledTimes(1);
+  });
+
+  it("returns 400 when a single source result carries more than 5000 deals", async () => {
+    // Arrange
+    const processSourceResultsFn = vi.fn();
+    const handler = createHandler({ processSourceResultsFn });
+    const request = authedRequest("/ingest", {
+      method: "POST",
+      body: JSON.stringify({
+        results: [{ source: "aldi", status: "fulfilled", deals: buildRawDeals(5001) }],
+      }),
+    });
+    const ctx = createExecutionContext();
+
+    // Act
+    const response = await handler.fetch!(request, testWorkerEnv(), ctx);
+    await waitOnExecutionContext(ctx);
+
+    // Assert
+    expect(response.status).toBe(400);
+    expect(processSourceResultsFn).not.toHaveBeenCalled();
+  });
+
+  it("accepts a single source result carrying exactly 5000 deals", async () => {
+    // Arrange
+    const summary = { fetched: 5000, matched: 0, sourceFailures: [] };
+    const processSourceResultsFn = vi.fn().mockResolvedValue(summary);
+    const handler = createHandler({ processSourceResultsFn });
+    const request = authedRequest("/ingest", {
+      method: "POST",
+      body: JSON.stringify({
+        results: [{ source: "aldi", status: "fulfilled", deals: buildRawDeals(5000) }],
+      }),
+    });
+    const ctx = createExecutionContext();
+
+    // Act
+    const response = await handler.fetch!(request, testWorkerEnv(), ctx);
+    await waitOnExecutionContext(ctx);
+
+    // Assert
+    expect(response.status).toBe(200);
+    expect(processSourceResultsFn).toHaveBeenCalledTimes(1);
+  });
+
+  it("returns 200 and records source_health failures when every result in a valid body is rejected", async () => {
+    // Arrange: no processSourceResultsFn override, so the real
+    // processSourceResults (from src/pipeline.ts) runs against the real D1
+    // binding, the same way the POST /run tests above drive the real
+    // runPipeline through a fake browser/fetcher.
+    const handler = createHandler({
+      buildConfigFn: (e) => ({
+        watchlist: [{ term: "unmatched-term-xyz", minDiscountPercent: 0, exclude: [] }],
+        ntfy: { topicUrl: e.NTFY_TOPIC_URL },
+        stores: {
+          aldi: { servicePoint: "G452", categoryKeys: ["cat-1"] },
+          coles: { url: "https://www.coles.com.au/on-special?filter_Special=halfprice" },
+          woolworths: { url: "https://www.woolworths.com.au/apis/ui/browse/category" },
+        },
+      }),
+    });
+    const request = authedRequest("/ingest", {
+      method: "POST",
+      body: JSON.stringify({
+        results: [
+          { source: "aldi", status: "rejected", reason: "fetch timed out" },
+          { source: "coles", status: "rejected", reason: "blocked by anti-bot" },
+          { source: "woolworths", status: "rejected", reason: "network error" },
+        ],
+      }),
+    });
+    const ctx = createExecutionContext();
+
+    // Act
+    const response = await handler.fetch!(request, testWorkerEnv(), ctx);
+    await waitOnExecutionContext(ctx);
+
+    // Assert: 200 with all three sources named as failures in the summary,
+    // and source_health in D1 actually recorded the attempt.
+    expect(response.status).toBe(200);
+    const body = (await response.json()) as {
+      fetched: number;
+      matched: number;
+      sourceFailures: string[];
+    };
+    expect(body.fetched).toBe(0);
+    expect(body.matched).toBe(0);
+    expect([...body.sourceFailures].sort()).toEqual(["aldi", "coles", "woolworths"]);
+
+    const health = await getHealth(testEnv.DB);
+    const aldiHealth = health.find((entry) => entry.source === "aldi");
+    expect(aldiHealth?.consecutiveFailures).toBeGreaterThanOrEqual(1);
   });
 });
 
