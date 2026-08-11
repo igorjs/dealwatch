@@ -21,10 +21,6 @@ function makeFakePage(nextDataText: string | null): { page: PageLike; gotoUrls: 
       return { status: () => 200 };
     },
     evaluate: async () => nextDataText,
-    waitForResponse: async () => {
-      throw new Error("waitForResponse is not used by the Coles driver");
-    },
-    on: () => {},
     close: async () => {},
   };
   return { page, gotoUrls };

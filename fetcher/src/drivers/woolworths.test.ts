@@ -30,10 +30,6 @@ function makeFakePage(
       call += 1;
       return response;
     },
-    waitForResponse: async () => {
-      throw new Error("waitForResponse is not used by the Woolworths driver");
-    },
-    on: () => {},
     close: async () => {},
   };
   return { page, calls };

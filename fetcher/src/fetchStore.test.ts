@@ -9,8 +9,6 @@ import { fetchStore } from "./fetchStore.ts";
 const FAKE_PAGE: PageLike = {
   goto: async () => null,
   evaluate: async () => undefined,
-  waitForResponse: async () => ({ url: () => "https://example.test", json: async () => ({}) }),
-  on: () => {},
   close: async () => {},
 };
 

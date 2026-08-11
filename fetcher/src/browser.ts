@@ -19,11 +19,8 @@
  * - `BrowserContext.newPage(): Promise<Page>`.
  * - `Page.goto(url, options?): Promise<Response | null>` (types.d.ts:3414),
  *   `Page.evaluate(pageFunction, arg?): Promise<R>` (types.d.ts:137, 190),
- *   `Page.waitForResponse(urlOrPredicate, options?): Promise<Response>`
- *   (types.d.ts:5601), `Page.on("response", listener): this`,
  *   `Page.close(options?): Promise<void>` (types.d.ts:2343).
- * - `Response.url(): string`, `Response.json(): Promise<Serializable>`,
- *   `Response.status(): number`.
+ * - `Response.status(): number`.
  *
  * Adapted from the deleted `src/browser.ts` (git history, commit 9ea5435),
  * which wrapped `@cloudflare/puppeteer` for the Worker. The shape carries
@@ -43,9 +40,9 @@ chromium.use(StealthPlugin());
 
 /**
  * The subset of the real Playwright `Page` API the store drivers need:
- * navigate, read the rendered page or an intercepted response, and close.
- * Narrowed and re-typed (not a re-export of Playwright's own `Page`) so
- * fakes in driver tests only need to implement these few methods.
+ * navigate, read the rendered page, and close. Narrowed and re-typed (not a
+ * re-export of Playwright's own `Page`) so fakes in driver tests only need
+ * to implement these few methods.
  */
 export interface PageLike {
   goto(
@@ -56,18 +53,6 @@ export interface PageLike {
     },
   ): Promise<{ status(): number } | null>;
   evaluate(pageFunction: (arg?: unknown) => unknown, arg?: unknown): Promise<unknown>;
-  /**
-   * Resolves with the first response matching `urlOrPredicate`, for a
-   * driver that intercepts a GraphQL/XHR response instead of scraping the
-   * rendered DOM.
-   */
-  waitForResponse(
-    urlOrPredicate:
-      | string
-      | ((response: { url(): string; json(): Promise<unknown> }) => boolean | Promise<boolean>),
-    options?: { timeout?: number },
-  ): Promise<{ url(): string; json(): Promise<unknown> }>;
-  on(event: "response", listener: (response: { url(): string; json(): Promise<unknown> }) => void): void;
   close(options?: { runBeforeUnload?: boolean }): Promise<void>;
 }
 

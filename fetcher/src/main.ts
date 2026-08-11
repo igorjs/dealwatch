@@ -9,9 +9,10 @@
  * data, never a per-source exception. The only outcome this function treats
  * as a process failure is the ingest POST itself failing, since that is the
  * one case the Worker never hears about the run at all. That failure is
- * reported by setting `process.exitCode` rather than by rejecting, so the
- * browser still closes below and GitHub Actions still sees a clean shutdown
- * with the exit code flushed.
+ * logged and reported by setting `process.exitCode` rather than by
+ * rejecting, so the browser still closes below and GitHub Actions still
+ * sees a clean shutdown with the exit code flushed, and the run log names a
+ * reason instead of just the red exit status.
  */
 import type { Source, SourceResult } from "../../src/types.ts";
 import { launchStealth, newPage, type BrowserLike, type PageLike } from "./browser.ts";
@@ -73,7 +74,8 @@ export async function main(deps: MainDeps = defaultDeps): Promise<void> {
 
     try {
       await deps.postIngest(results, { url, token });
-    } catch {
+    } catch (error) {
+      console.error(error);
       process.exitCode = 1;
     }
   } finally {

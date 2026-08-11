@@ -7,8 +7,6 @@ describe("newPage", () => {
     const fakePage: PageLike = {
       goto: async () => null,
       evaluate: async () => undefined,
-      waitForResponse: async () => ({ url: () => "https://example.test", json: async () => ({}) }),
-      on: () => {},
       close: async () => {},
     };
     const fakeBrowser: BrowserLike = {

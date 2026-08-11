@@ -1,4 +1,4 @@
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { Source, SourceResult } from "../../src/types.ts";
 import type { BrowserLike, PageLike } from "./browser.ts";
 import { main, type LaunchedBrowser, type MainDeps } from "./main.ts";
@@ -27,8 +27,6 @@ function makeFakeBrowser(callOrder: string[]): LaunchedBrowser {
       const page: PageLike = {
         goto: async () => null,
         evaluate: async () => undefined,
-        waitForResponse: async () => ({ url: () => "https://example.test", json: async () => ({}) }),
-        on: () => {},
         close: async () => {
           callOrder.push(`page:${id}:close`);
         },
@@ -82,6 +80,7 @@ describe("main", () => {
 
   afterEach(() => {
     process.exitCode = undefined;
+    vi.restoreAllMocks();
   });
 
   it("one source failing does not stop the others, and postIngest receives all three results in one call", async () => {
@@ -163,6 +162,35 @@ describe("main", () => {
 
     // Assert
     expect(process.exitCode).toBe(1);
+  });
+
+  it("postIngest failing logs the error, without leaking the token, alongside the non-zero exit code", async () => {
+    // Arrange
+    const callOrder: string[] = [];
+    const { fetchStoreFake } = makeFetchStoreFake(
+      { aldi: fulfilled("aldi"), woolworths: fulfilled("woolworths"), coles: fulfilled("coles") },
+      callOrder,
+    );
+    const { postIngestFake } = makePostIngestFake(true);
+    const consoleErrorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+    const deps: MainDeps = {
+      env: { API_TOKEN: TOKEN, WORKER_INGEST_URL: URL },
+      launchStealth: async () => makeFakeBrowser(callOrder),
+      fetchStore: fetchStoreFake,
+      postIngest: postIngestFake,
+    };
+
+    // Act
+    await main(deps);
+
+    // Assert
+    expect(process.exitCode).toBe(1);
+    expect(consoleErrorSpy).toHaveBeenCalled();
+    for (const call of consoleErrorSpy.mock.calls) {
+      for (const arg of call) {
+        expect(String(arg)).not.toContain(TOKEN);
+      }
+    }
   });
 
   it("runs the three sources serially: a page always closes before the next one opens", async () => {
