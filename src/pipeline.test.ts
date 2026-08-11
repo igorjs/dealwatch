@@ -2,12 +2,17 @@ import { env } from "cloudflare:workers";
 import { applyD1Migrations } from "cloudflare:test";
 import type { D1Migration } from "@cloudflare/vitest-pool-workers";
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { type PipelineDeps, type SourceFetchers, runPipeline } from "./pipeline";
+import {
+  type PipelineDeps,
+  type SourceFetchers,
+  processSourceResults,
+  runPipeline,
+} from "./pipeline";
 import { filterNew, getHealth, recordAttempt } from "./store";
 import { readList } from "./listStore";
 import { stableId } from "./core/id";
-import type { BrowserSession, PageLike } from "./browser";
-import type { Config, RawDeal, Watch } from "./types";
+import type { BrowserSession, PageLike, SourceResult } from "./browser";
+import type { Config, RawDeal, Source, Watch } from "./types";
 
 // `TEST_MIGRATIONS` is a test-only binding wired in vitest.config.ts, same
 // pattern as store.test.ts.
@@ -81,6 +86,16 @@ function fetchers(overrides: Partial<SourceFetchers> = {}): SourceFetchers {
     coles: vi.fn().mockResolvedValue([]),
     ...overrides,
   };
+}
+
+/** A fulfilled per-source result, the same shape `withSourcesSerial` produces. */
+function fulfilledResult(source: Source, deals: RawDeal[]): SourceResult<Source, RawDeal[]> {
+  return { source, status: "fulfilled", value: deals };
+}
+
+/** A rejected per-source result, the same shape `withSourcesSerial` produces. */
+function rejectedResult(source: Source, reason: unknown): SourceResult<Source, RawDeal[]> {
+  return { source, status: "rejected", reason };
 }
 
 /** A push spy: records every (message, topicUrl) call; resolves by default. */
@@ -326,5 +341,119 @@ describe("runPipeline", () => {
 
     // Act + Assert
     await expect(runPipeline(deps)).resolves.toBeDefined();
+  });
+});
+
+describe("processSourceResults", () => {
+  it("delivers every fulfilled deal to both sinks and records health per source", async () => {
+    // Arrange
+    const listKey = `list-${crypto.randomUUID()}.json`;
+    const aldiDeals = [
+      rawDeal({ title: "Extra Virgin Olive Oil 1L" }),
+      rawDeal({ title: "Light Olive Oil 500mL" }),
+      rawDeal({ title: "Garlic Olive Oil 250mL" }),
+    ];
+    const push = pushSpy();
+    const deps = baseDeps({ pushFn: push, listKey });
+    const results: SourceResult<Source, RawDeal[]>[] = [
+      fulfilledResult("aldi", aldiDeals),
+      rejectedResult("coles", "socket hang up"),
+    ];
+
+    // Act
+    const summary = await processSourceResults(deps, results);
+
+    // Assert
+    expect(summary.fetched).toBe(3);
+    expect(summary.matched).toBe(3);
+    expect(push).toHaveBeenCalledTimes(1);
+    const grouped = await readList(env.LIST, listKey);
+    expect(Object.values(grouped).flat()).toHaveLength(3);
+    const health = await getHealth(testEnv.DB);
+    expect(health.find((entry) => entry.source === "aldi")?.consecutiveFailures).toBe(0);
+    expect(
+      health.find((entry) => entry.source === "coles")?.consecutiveFailures,
+    ).toBeGreaterThanOrEqual(1);
+  });
+
+  it("fires the threshold alert with the rejected result's reason, and never mentions Browser Rendering", async () => {
+    // Arrange: seed woolworths at consecutiveFailures = threshold - 1 (2), so
+    // this run's rejection crosses the threshold of 3.
+    const failThreshold = 3;
+    await recordAttempt(testEnv.DB, "woolworths", new Date("2020-01-01T00:00:00Z"), false);
+    await recordAttempt(testEnv.DB, "woolworths", new Date("2020-01-01T01:00:00Z"), false);
+    const push = pushSpy();
+    const deps = baseDeps({
+      pushFn: push,
+      failureThreshold: failThreshold,
+      listKey: `list-${crypto.randomUUID()}.json`,
+    });
+    const results: SourceResult<Source, RawDeal[]>[] = [
+      rejectedResult("woolworths", "stealth plugin detected, page returned 403"),
+    ];
+
+    // Act
+    await processSourceResults(deps, results);
+
+    // Assert
+    expect(push).toHaveBeenCalledTimes(1);
+    const [message] = push.mock.calls[0] ?? [];
+    expect(message).toContain("stealth plugin detected, page returned 403");
+    expect(message).not.toContain("Browser Rendering");
+  });
+
+  it("resolves with an empty summary and never throws when every source rejects", async () => {
+    // Arrange
+    const push = pushSpy();
+    const deps = baseDeps({ pushFn: push, listKey: `list-${crypto.randomUUID()}.json` });
+    const results: SourceResult<Source, RawDeal[]>[] = [
+      rejectedResult("aldi", "timeout"),
+      rejectedResult("woolworths", "timeout"),
+      rejectedResult("coles", "timeout"),
+    ];
+
+    // Act
+    const summary = await processSourceResults(deps, results);
+
+    // Assert: nothing fetched or matched, all three failures recorded, and
+    // nothing written to the shopping list (so recordSeen never ran).
+    expect(summary.fetched).toBe(0);
+    expect(summary.matched).toBe(0);
+    expect(summary.sourceFailures).toHaveLength(3);
+    const grouped = await readList(env.LIST, deps.listKey);
+    expect(grouped).toEqual({});
+  });
+
+  it("skips recordSeen when the R2 write rejects, so the matched deal is still eligible next run", async () => {
+    // Arrange: pre-corrupt the object at this test's own unique key so
+    // upsertList's readStore() throws CorruptListFileError.
+    const listKey = `list-${crypto.randomUUID()}.json`;
+    await env.LIST.put(listKey, "{ not valid json");
+    const raw = rawDeal();
+    const push = pushSpy();
+    const deps = baseDeps({ pushFn: push, listKey });
+    const dealId = stableId("aldi", raw.url);
+    const results: SourceResult<Source, RawDeal[]>[] = [fulfilledResult("aldi", [raw])];
+
+    // Act
+    const summary = await processSourceResults(deps, results);
+
+    // Assert
+    expect(summary.matched).toBe(1);
+    const stillNew = await filterNew(testEnv.DB, [
+      {
+        id: dealId,
+        source: "aldi",
+        store: "Aldi Example",
+        title: "Extra Virgin Olive Oil 1L",
+        url: raw.url,
+        category: "other",
+        priceCents: 500,
+        wasPriceCents: 1000,
+        discountPercent: 50,
+        seenAt: NOW.toISOString(),
+      },
+    ]);
+    expect(stillNew.map((d) => d.id)).toEqual([dealId]);
   });
 });
