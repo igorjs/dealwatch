@@ -3,6 +3,8 @@ import {
   ConfigSchema,
   type Deal,
   DealSchema,
+  type IngestBody,
+  IngestBodySchema,
   type ListItem,
   ListItemSchema,
   type RawDeal,
@@ -165,5 +167,78 @@ describe("ListItemSchema", () => {
 
     // Assert
     expect(result).toEqual(validListItem);
+  });
+});
+
+describe("IngestBodySchema", () => {
+  it("parses a body with one fulfilled result and one rejected result", () => {
+    // Arrange
+    const validRawDeal: RawDeal = {
+      source: "woolworths",
+      title: "Beef Mince 500g",
+      url: "https://woolworths.com.au/product/beef-mince-500g",
+      store: "Woolworths Rozelle",
+      department: "Meat & Seafood",
+      priceCents: 750,
+      wasPriceCents: 1500,
+      discountPercent: 50,
+    };
+    const validBody: IngestBody = {
+      results: [
+        { source: "woolworths", status: "fulfilled", deals: [validRawDeal] },
+        { source: "coles", status: "rejected", reason: "timed out" },
+      ],
+    };
+
+    // Act
+    const result = IngestBodySchema.parse(validBody);
+
+    // Assert
+    expect(result.results).toHaveLength(2);
+    expect(result.results[0]).toMatchObject({ status: "fulfilled", source: "woolworths" });
+    expect(result.results[1]).toMatchObject({ status: "rejected", source: "coles" });
+  });
+
+  it.each([
+    [
+      "a fulfilled result's deal has a string priceCents",
+      {
+        results: [
+          {
+            source: "woolworths",
+            status: "fulfilled",
+            deals: [
+              {
+                source: "woolworths",
+                title: "Beef Mince 500g",
+                url: "https://woolworths.com.au/product/beef-mince-500g",
+                store: "Woolworths Rozelle",
+                department: "Meat & Seafood",
+                priceCents: "750",
+                wasPriceCents: 1500,
+                discountPercent: 50,
+              },
+            ],
+          },
+        ],
+      },
+    ],
+    [
+      "a result has an unknown source",
+      {
+        results: [{ source: "iga", status: "rejected", reason: "unsupported store" }],
+      },
+    ],
+    [
+      "a rejected result has no reason field",
+      {
+        results: [{ source: "coles", status: "rejected" }],
+      },
+    ],
+  ])("throws when %s", (_label, invalidBody) => {
+    // Arrange (invalidBody provided by test.each)
+
+    // Act & Assert
+    expect(() => IngestBodySchema.parse(invalidBody)).toThrow();
   });
 });
