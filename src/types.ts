@@ -21,6 +21,34 @@ export const RawDealSchema = z.object({
 });
 export type RawDeal = z.infer<typeof RawDealSchema>;
 
+/**
+ * One source's outcome from the Actions Playwright fetcher, as sent to
+ * `POST /ingest`. Mirrors `Promise.allSettled` so a source failing to fetch
+ * never blocks the others from reaching the Worker in the same request.
+ */
+export const SourceResultSchema = z.discriminatedUnion("status", [
+  z.object({
+    source: SourceSchema,
+    status: z.literal("fulfilled"),
+    deals: z.array(RawDealSchema),
+  }),
+  z.object({
+    source: SourceSchema,
+    status: z.literal("rejected"),
+    reason: z.string(),
+  }),
+]);
+export type SourceResult = z.infer<typeof SourceResultSchema>;
+
+/**
+ * The `/ingest` request body: the wire contract shared between the Actions
+ * fetcher and the Worker, so both sides validate the same shape.
+ */
+export const IngestBodySchema = z.object({
+  results: z.array(SourceResultSchema),
+});
+export type IngestBody = z.infer<typeof IngestBodySchema>;
+
 /** A deal after normalization: stable id assigned, category mapped to the shared set. */
 export const DealSchema = z.object({
   id: z.string(),
