@@ -4,107 +4,75 @@ import type { PageLike } from "../browser.ts";
 import { SourceError } from "../errors.ts";
 
 /**
- * SCHEMA WARNING: `ColesPayloadSchema`, used here through `parseColesPayload`,
- * is a placeholder guess (see the comment above it in src/sources/coles.ts),
- * never checked against a real Coles response. WU-14 captures a live payload
- * and corrects it. This driver is written against the guess as it stands; it
- * must not loosen the parser or improve the guess.
- */
-
-/**
  * The half-price specials page. A real browser loading it renders about 900
  * product tiles and mints the `reese84`, `visid_incap`, `nlbi` and
- * `incap_ses` cookies a plain request lacks; without them the API responds
- * 401 "missing subscription key" (2026-08-04 spike). Product data itself
- * arrives over a `/api/graphql` response fired while the page loads, so the
- * driver intercepts that response instead of scraping the rendered DOM.
+ * `incap_ses` cookies a plain request lacks. Page 1 of results is
+ * server-rendered into the page's `__NEXT_DATA__` script tag, not returned
+ * by a GraphQL call the driver could intercept: the only `/api/graphql`
+ * request this page fires on load is the category tree (the same operation
+ * v1 captured), not the product listing (verified 2026-08-11 against the
+ * live page's `performance.getEntriesByType("resource")`).
  */
 const COLES_SPECIALS_URL = "https://www.coles.com.au/on-special?filter_Special=halfprice";
 
-/** Every GraphQL call this page fires goes through this one path. */
-const COLES_GRAPHQL_PATH = "/api/graphql";
+/**
+ * Declared locally, not pulled from a "dom" lib: fetcher/tsconfig.json scopes
+ * `lib` to plain ES2022, so `document` is not an ambient type here even
+ * though the function below runs inside a real browser page (via
+ * `page.evaluate`), where a real `document` exists at runtime regardless.
+ */
+declare const document: {
+  getElementById(id: string): { textContent: string | null } | null;
+};
 
 /**
- * Bounds how long the driver waits for a `/api/graphql` response whose body
- * structurally matches the product-listing shape. Several unrelated GraphQL
- * operations fire on this same page too (category tree, cart, and so on),
- * so the first `/api/graphql` response seen is not necessarily the right
- * one. Playwright's own `waitForResponse` already tests every response
- * against the predicate, in arrival order, and resolves on the first match,
- * so a timeout is the bound the PageLike seam supports cleanly, rather than
- * hand-rolled counting through `page.on("response", ...)`.
+ * Reads the `__NEXT_DATA__` script tag's raw JSON text out of the rendered
+ * page. Runs inside the browser page, not this process, so `page.evaluate`
+ * only serialises back what this returns: a string, or `null` when the tag
+ * is absent (an Incapsula block page is a tiny HTML document with an
+ * `_Incapsula_Resource` script and no `__NEXT_DATA__` tag, seen directly
+ * during the 2026-08-11 capture).
  */
-const RESPONSE_TIMEOUT_MS = 30_000;
-
-/**
- * True when `body` is shaped the way `parseColesPayload` expects. Reuses
- * `parseColesPayload` itself as the structural test and discards its
- * result, instead of duplicating `ColesPayloadSchema` here: that schema is
- * not exported, and a second, hand-rolled copy in this file could drift
- * from the real one, especially once WU-14 corrects it.
- */
-function matchesColesPayload(body: unknown): boolean {
-  try {
-    parseColesPayload(body);
-    return true;
-  } catch {
-    return false;
-  }
-}
-
-async function isColesProductListingResponse(response: {
-  url(): string;
-  json(): Promise<unknown>;
-}): Promise<boolean> {
-  if (!response.url().includes(COLES_GRAPHQL_PATH)) {
-    return false;
-  }
-
-  let body: unknown;
-  try {
-    body = await response.json();
-  } catch {
-    return false;
-  }
-
-  return matchesColesPayload(body);
+function readNextDataText(): string | null {
+  return document.getElementById("__NEXT_DATA__")?.textContent ?? null;
 }
 
 /**
- * Navigates the half-price specials page and captures the `/api/graphql`
- * response whose body structurally matches the product-listing schema,
- * disambiguating among however many GraphQL calls the page fires rather
- * than taking the first one seen. Returns the RAW matched body: it does not
- * parse it into `RawDeal[]` itself, so the caller parses exactly once
- * instead of the driver parsing once per candidate response it inspects.
+ * Navigates the half-price specials page and returns the parsed
+ * `__NEXT_DATA__` object. Returns the RAW parsed object: it does not
+ * validate it against `ColesPayloadSchema` itself, so the caller parses
+ * exactly once instead of the driver parsing once more on top.
  *
- * Throws `SourceError` if no response matches within `RESPONSE_TIMEOUT_MS`.
- * The error message never carries a cookie, a header, or a response body.
+ * Only page 1 is captured this way (48 to 60 of the 894 results seen on
+ * capture day); paging is not implemented here.
+ *
+ * Throws `SourceError` if `__NEXT_DATA__` is absent or its content is not
+ * valid JSON.
  */
 export async function driveColes(page: PageLike): Promise<unknown> {
-  let response: { url(): string; json(): Promise<unknown> };
+  await page.goto(COLES_SPECIALS_URL, { waitUntil: "domcontentloaded" });
+  const text = (await page.evaluate(readNextDataText)) as string | null;
 
-  try {
-    [response] = await Promise.all([
-      page.waitForResponse(isColesProductListingResponse, { timeout: RESPONSE_TIMEOUT_MS }),
-      page.goto(COLES_SPECIALS_URL, { waitUntil: "domcontentloaded" }),
-    ]);
-  } catch {
-    throw new SourceError("coles", "no product listing response was seen matching the expected schema");
+  if (text === null) {
+    throw new SourceError("coles", "no __NEXT_DATA__ script tag was found (likely a bot block page)");
   }
 
-  return response.json();
+  try {
+    return JSON.parse(text);
+  } catch {
+    throw new SourceError("coles", "__NEXT_DATA__ content was not valid JSON");
+  }
 }
 
 /**
- * Drives the Coles half-price GraphQL response and parses it exactly once
- * with `parseColesPayload`.
+ * Drives the Coles `__NEXT_DATA__` payload and parses it exactly once with
+ * `parseColesPayload`.
  *
- * A matched response with 0 products is treated as a failure, not a
- * healthy empty fetch: a datacenter runner IP can be soft bot-blocked with
- * a valid-shaped, empty response instead of an HTTP error, and recording
- * that as healthy would hide the store silently until the watchlist
- * stopped matching anything without anyone noticing why.
+ * A parsed result with 0 products is treated as a failure, not a healthy
+ * empty fetch: a datacenter runner IP can be soft bot-blocked with a
+ * valid-shaped, empty response instead of an HTTP error, and recording that
+ * as healthy would hide the store silently until the watchlist stopped
+ * matching anything without anyone noticing why.
  */
 export async function fetchColes(page: PageLike): Promise<RawDeal[]> {
   const raw = await driveColes(page);

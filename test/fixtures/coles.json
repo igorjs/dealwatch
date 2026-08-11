@@ -1,34 +1,92 @@
 {
-  "_placeholder": "PLACEHOLDER FIXTURE, HIGH UNCERTAINTY. The only Coles request ever captured is the GetProductCategories operation, NOT the half-price product-listing operation behind /on-special?filter_Special=halfprice. This models a best-effort guess at a Coles GraphQL product-search response shape (data.results.results[] + totalCount, product fields id/name/brand/pricing.now/pricing.was/seoToken/onlineHeirs[].category). Refine this fixture together with the Zod schema in src/sources/coles.ts once the real product-listing request/response is captured (DevTools Network tab on /on-special?filter_Special=halfprice, or Browser Rendering's own intercepted response).",
-  "data": {
-    "results": {
-      "results": [
-        {
-          "id": 12345,
-          "name": "Tim Tam Original 200g",
-          "brand": "Arnott's",
-          "pricing": { "now": 2.5, "was": 5.0 },
-          "seoToken": "tim-tam-original-200g-12345",
-          "onlineHeirs": [{ "category": "Biscuits & Crackers" }]
-        },
-        {
-          "id": 67890,
-          "name": "Coles Full Cream Milk 3L",
-          "brand": "Coles",
-          "pricing": { "now": 3.5, "was": null },
-          "seoToken": "coles-full-cream-milk-3l-67890",
-          "onlineHeirs": [{ "category": "Dairy, Eggs & Fridge" }]
-        },
-        {
-          "id": 11111,
-          "name": "Mystery Bargain Item",
-          "brand": null,
-          "pricing": { "now": 1.0, "was": 2.0 },
-          "seoToken": "mystery-bargain-item-11111",
-          "onlineHeirs": []
-        }
-      ],
-      "totalCount": 3
+  "_capture": "Real capture from https://www.coles.com.au/on-special?filter_Special=halfprice on 2026-08-11, trimmed to the fields the parser reads. Ad tracking ids (adId, adSource), the searchUid, image uris, aisle locations and stock counts were dropped; no cookie or session material is present. The page server-renders its first page of results into the __NEXT_DATA__ script tag, so this is that object, not a GraphQL response body. The trailing SINGLE_TILE entry is a real ad tile and must be skipped by the parser.",
+  "props": {
+    "pageProps": {
+      "searchResults": {
+        "noOfResults": 894,
+        "start": 0,
+        "pageSize": 48,
+        "resultType": 1,
+        "results": [
+          {
+            "_type": "PRODUCT",
+            "id": 332394,
+            "name": "Muffins English",
+            "brand": "Tip Top",
+            "size": "400g",
+            "availability": true,
+            "onlineHeirs": [
+              {
+                "aisle": "English Muffins",
+                "category": "Packaged Breakfast Snacks",
+                "subCategory": "Bakery"
+              }
+            ],
+            "pricing": {
+              "now": 3.2,
+              "was": 6.4,
+              "saveAmount": 3.2,
+              "priceDescription": "1/2 Price",
+              "savePercent": 50,
+              "promotionType": "SPECIAL",
+              "specialType": "PERCENT_OFF"
+            }
+          },
+          {
+            "_type": "PRODUCT",
+            "id": 1609540,
+            "name": "Sonicare Electric Toothbrush Series 1100 White",
+            "brand": "Philips",
+            "size": "1 Pack",
+            "availability": true,
+            "onlineHeirs": [
+              {
+                "aisle": "Toothbrushes",
+                "category": "Dental Care",
+                "subCategory": "Health & Beauty"
+              }
+            ],
+            "pricing": {
+              "now": 35,
+              "was": 70,
+              "saveAmount": 35,
+              "priceDescription": "1/2 Price",
+              "savePercent": 50,
+              "promotionType": "SPECIAL",
+              "specialType": "PERCENT_OFF"
+            }
+          },
+          {
+            "_type": "PRODUCT",
+            "id": 9071766,
+            "name": "Extra Sensitive Deep Clean Toothbrush",
+            "brand": "Oral B",
+            "size": "3 Pack",
+            "availability": true,
+            "onlineHeirs": [
+              {
+                "aisle": "Toothbrushes",
+                "category": "Dental Care",
+                "subCategory": "Health & Beauty"
+              }
+            ],
+            "pricing": {
+              "now": 6,
+              "was": 12,
+              "saveAmount": 6,
+              "priceDescription": "1/2 Price",
+              "savePercent": 50,
+              "promotionType": "SPECIAL",
+              "specialType": "PERCENT_OFF"
+            }
+          },
+          {
+            "_type": "SINGLE_TILE",
+            "id": 0,
+            "name": "ad tile, must be skipped"
+          }
+        ]
+      }
     }
   }
 }
