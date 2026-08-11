@@ -15,7 +15,11 @@
     "skipLibCheck": true,
     "isolatedModules": true,
     "verbatimModuleSyntax": true,
-    "noEmit": true
+    "noEmit": true,
+    // This project runs on Node (GitHub Actions), not in a browser or a
+    // Worker, so it needs Node's globals: URLSearchParams, process.env, and
+    // fetch. Pinned to 20.x to match the node-version the workflow installs.
+    "types": ["node"]
   },
   "include": ["src/**/*.ts"]
 }
