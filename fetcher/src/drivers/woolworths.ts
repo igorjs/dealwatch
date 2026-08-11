@@ -126,8 +126,9 @@ async function fetchPage(page: PageLike, url: string, pageNumber: number): Promi
 /**
  * Warms the Akamai session by navigating the half-price page, then pages the
  * category API by `pageNumber`, merging every page's `bundles` until the
- * running product count reaches the first page's `totalRecordCount`, capped
- * at `MAX_PAGES`. Returns RAW merged JSON: it does not validate against
+ * running product count reaches the first page's `totalRecordCount`, the
+ * feed returns an empty page, or `MAX_PAGES` stops it. Returns RAW merged
+ * JSON: it does not validate against
  * `WoolworthsPayloadSchema` itself, so the caller parses the merged result
  * exactly once instead of once per page.
  */
@@ -135,7 +136,17 @@ export async function driveWoolworths(page: PageLike, profile: StoreProfile): Pr
   await page.goto(WOOLWORTHS_HALF_PRICE_PAGE_URL, { waitUntil: "domcontentloaded" });
 
   const mergedBundles: unknown[] = [];
-  let totalRecordCount = 0;
+  // What the feed said, reported back so the caller's zero-deal guard can
+  // still tell a real empty feed from a soft bot-block. Stays 0 when the
+  // feed says nothing.
+  let reportedTotal = 0;
+  // What the loop pages towards. Deliberately NOT `reportedTotal`: if the
+  // feed stops sending `totalRecordCount`, a 0 here would make the
+  // `collectedCount >= expectedTotal` check true on the first pass and
+  // silently return page 1 of roughly 1600 records as a healthy fetch.
+  // Infinity instead means an unreported total pages on until the feed runs
+  // dry or MAX_PAGES stops it, matching the Aldi driver.
+  let expectedTotal = Number.POSITIVE_INFINITY;
   let collectedCount = 0;
 
   for (let pageNumber = 1; pageNumber <= MAX_PAGES; pageNumber++) {
@@ -144,17 +155,22 @@ export async function driveWoolworths(page: PageLike, profile: StoreProfile): Pr
     mergedBundles.push(...bundles);
 
     if (pageNumber === 1 && typeof raw.totalRecordCount === "number") {
-      totalRecordCount = raw.totalRecordCount;
+      reportedTotal = raw.totalRecordCount;
+      expectedTotal = raw.totalRecordCount;
     }
 
-    collectedCount += bundles.reduce((sum, bundle) => sum + (bundle.products?.length ?? 0), 0);
+    const pageCount = bundles.reduce((sum, bundle) => sum + (bundle.products?.length ?? 0), 0);
+    collectedCount += pageCount;
 
-    if (collectedCount >= totalRecordCount) {
+    // An empty page means the feed is exhausted. This is the only
+    // termination condition available when the total is unreported, and it
+    // also stops early on a feed that over-reports its total.
+    if (pageCount === 0 || collectedCount >= expectedTotal) {
       break;
     }
   }
 
-  return { bundles: mergedBundles, totalRecordCount };
+  return { bundles: mergedBundles, totalRecordCount: reportedTotal };
 }
 
 /**
