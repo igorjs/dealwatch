@@ -21,6 +21,17 @@ const ALDI_API_URL = "https://api.aldi.com.au/v3/product-search";
 const PAGE_LIMIT = 30;
 
 /**
+ * Defensive upper bound on pages fetched per category, mirroring the
+ * Woolworths driver's own cap. Both termination conditions below depend on
+ * the response: a short page, or a `totalCount` read from page one. A
+ * response that keeps returning full pages and never reports a `totalCount`
+ * satisfies neither and would loop until the Actions job hits its timeout,
+ * burning the run and producing nothing. The largest real feed is the
+ * 120-item Limited Time Only one (4 pages), so 20 is generous.
+ */
+const MAX_PAGES_PER_CATEGORY = 20;
+
+/**
  * Declared locally, not pulled from a "dom" lib: fetcher/tsconfig.json scopes
  * `lib` to plain ES2022, so `document` is not an ambient type here even
  * though the function below runs inside a real browser page (via
@@ -78,7 +89,7 @@ export async function driveAldi(page: PageLike, profile: AldiStoreProfile): Prom
     let categoryTotal = Number.POSITIVE_INFINITY;
     let categoryCount = 0;
 
-    while (true) {
+    for (let pageNumber = 0; pageNumber < MAX_PAGES_PER_CATEGORY; pageNumber++) {
       const raw = await readPage(page, buildUrl(categoryKey, offset, profile));
       mergedData.push(...raw.data);
       categoryCount += raw.data.length;
