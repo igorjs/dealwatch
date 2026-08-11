@@ -1,11 +1,12 @@
-# Deploying dealwatch on Cloudflare
+# Deploying dealwatch
 
-Dealwatch v2 runs entirely on Cloudflare: a Worker on a Cron Trigger drives
-three Browser Rendering sessions (Aldi, Woolworths, Coles), dedupes and
-matches against the watchlist, writes the shopping list to R2, and pushes
-matches to ntfy. There is no server to manage and nothing to install on a
-device. This doc covers provisioning D1 and R2, setting secrets, deploying,
-and verifying a live run.
+Dealwatch is split across two deployables: a fetcher that GitHub Actions
+runs on a schedule, driving a real browser session against Aldi, Woolworths,
+and Coles, and a Cloudflare Worker that receives the fetcher's results,
+dedupes and matches them against the watchlist, writes the shopping list to
+R2, and pushes matches to ntfy. This doc covers provisioning D1 and R2 for
+the Worker, setting both halves' secrets, deploying the Worker, and
+verifying a live run.
 
 ## 1. Prerequisites
 
@@ -14,8 +15,14 @@ and verifying a live run.
   ```sh
   npx wrangler login
   ```
-- Node 26, the version pinned in `mise.toml`. If you use `mise`, `mise install`
-  picks it up automatically.
+- Node 26 for the Worker's tooling (wrangler, vitest), the version pinned in
+  `mise.toml`. If you use `mise`, `mise install` picks it up automatically.
+- Node 18 or newer for the fetcher itself: `fetcher/package.json` pins
+  `engines.node >= 18`. GitHub Actions installs Node 20 for the scheduled
+  job, so that's the version to match locally if you want to run the
+  fetcher the same way Actions does.
+- A GitHub repository with Actions enabled, and optionally the `gh` CLI, to
+  set the repository secrets the fetcher needs (step 7).
 
 ## 2. Provision D1
 
@@ -59,11 +66,12 @@ Create the bucket that backs the `LIST` binding. The name must match
 npx wrangler r2 bucket create dealwatch-shopping-list
 ```
 
-## 5. Set secrets
+## 5. Set the Worker's secrets
 
 The Worker reads two secrets, both required. `API_TOKEN` gates every HTTP
-route (`POST /run`, `GET /health`, `GET /shopping-list`) as a bearer token.
-Generate a random one first:
+route (`POST /ingest`, `GET /health`, `GET /shopping-list`) as a bearer
+token. It's the same token the fetcher sends with every ingest request, so
+generate it once and reuse it in step 7:
 
 ```sh
 openssl rand -hex 32
@@ -77,54 +85,64 @@ npx wrangler secret put API_TOKEN
 npx wrangler secret put NTFY_TOPIC_URL
 ```
 
-## 6. Browser Rendering
-
-No provisioning step here: the `BROWSER` binding in `wrangler.jsonc` is tied
-to your account, not a named resource like D1 or R2, so there's nothing to
-create or name.
-
-One thing worth knowing before you deploy: Browser Rendering needs the
-Workers Paid plan. It bills on session duration and concurrency, and the Free
-plan's daily duration cap is tight for three serial sessions per run, twice a
-week. More on this in the caveats below.
-
-## 7. Cron schedule
-
-The schedule already lives in `wrangler.jsonc`:
-
-```jsonc
-"triggers": {
-  // Wed and Sat, 19:00 UTC.
-  "crons": ["0 19 * * 3", "0 19 * * 6"]
-}
-```
-
-Edit the `crons` array to change when it fires. There's no separate
-registration step: `wrangler deploy` picks up whatever's currently
-configured.
-
-## 8. Deploy
+## 6. Deploy the Worker
 
 ```sh
 npm run deploy
 ```
 
-This runs `wrangler deploy` and pushes the Worker live.
+This runs `wrangler deploy` and pushes the Worker live. Note the URL it
+prints, e.g. `https://dealwatch.<your-subdomain>.workers.dev`: the fetcher
+needs `<that URL>/ingest` as `WORKER_INGEST_URL` in the next step.
+
+## 7. Set the fetcher's GitHub Actions secrets
+
+This repository is public, so the fetcher's schedule lives in a GitHub
+Actions workflow, `.github/workflows/fetch.yml`, whose triggers are
+intentionally limited to `schedule` and `workflow_dispatch`. It never
+triggers on `pull_request`: a fork's pull request must never be able to
+reach these secrets.
+
+Two repository secrets must exist before the first scheduled run:
+
+- `API_TOKEN`: the same bearer token you set on the Worker in step 5.
+- `WORKER_INGEST_URL`: the full URL of the Worker's `/ingest` route from
+  step 6, e.g. `https://dealwatch.<your-subdomain>.workers.dev/ingest`.
+
+Set them with the `gh` CLI:
+
+```sh
+gh secret set API_TOKEN
+gh secret set WORKER_INGEST_URL
+```
+
+Or set them in the GitHub UI, under the repository's Settings, Secrets and
+variables, Actions.
+
+## 8. Schedule
+
+The schedule already lives in `.github/workflows/fetch.yml`, currently set
+to fire twice a week: Wednesday and Saturday at 19:00 UTC. Edit the time
+fields in the workflow's schedule trigger to change when it fires. There's
+no separate registration step: GitHub Actions picks up whatever's committed
+to the workflow file on the default branch.
 
 ## 9. Verify a live run
 
-Trigger a manual pass:
+There is no `POST /run` route any more. Trigger the fetcher manually with:
 
 ```sh
-curl -X POST https://<your-worker>.workers.dev/run \
-  -H "Authorization: Bearer <API_TOKEN>"
+gh workflow run fetch.yml
 ```
 
-Give it a few minutes: three serial Browser Rendering sessions plus
-pagination isn't instant. It returns a JSON summary
-(`{ fetched, matched, sourceFailures }`) once the pass completes.
+Or use the "Run workflow" button on the "Fetch deals" workflow in the
+repository's Actions tab. Give it a few minutes: three serial browser
+sessions plus pagination isn't instant. Watch the run's logs in the Actions
+tab; the job only fails if the ingest POST itself failed, since a single
+store failing to fetch is recorded as a per-source failure, not a process
+failure.
 
-Then confirm the shopping list landed in R2:
+Once the run completes, confirm the shopping list landed in R2:
 
 ```sh
 curl https://<your-worker>.workers.dev/shopping-list \
@@ -136,18 +154,22 @@ notification on your ntfy topic.
 
 ## Operational caveats
 
-- **Workers Paid plan is required.** D1, R2, Browser Rendering, Cron
-  Triggers, and secrets together assume it; this isn't a Free-tier setup.
-- **Browser Rendering bills on session duration and concurrency.** On the
-  Free tier the daily duration cap is easy to blow through if a manual
-  `POST /run` verification lands on the same day a Cron fire already used
-  part of the budget. Verify on a non-Cron day, accept the risk, or just use
-  Paid, which doesn't have this ceiling.
-- **`POST /run` has no concurrent-invocation guard.** Don't fire it
-  repeatedly or in parallel: overlapping Browser Rendering sessions can hit
-  the account's concurrency limit and start failing each other.
-- **DB recovery re-alerts once.** If D1 ever needs to be recreated (corruption,
-  accidental deletion), re-running the migrations rebuilds the schema, but
-  dedupe state (`seen_deal`) is gone. Every deal that currently matches the
-  watchlist will alert again, once, on the next run. This is expected, not a
-  bug, and matches the recovery story v1 had with its local sqlite file.
+- **The repository being public shapes the workflow's triggers.**
+  `.github/workflows/fetch.yml` only reacts to `schedule` and
+  `workflow_dispatch`. Never add a `pull_request` trigger: that would let a
+  forked pull request's workflow run see `API_TOKEN` and
+  `WORKER_INGEST_URL`.
+- **`POST /ingest` has caps, not just a bearer check.** The body is capped
+  at 5 MB and each source's result at 5,000 deals; both return a 400 rather
+  than let a malformed or oversized request through. A leaked `API_TOKEN`
+  could still be used to poison the shopping list or flood D1's dedupe
+  table with junk; there's no heavier auth model here, this is a personal,
+  single-user tool.
+- **Runs never overlap.** The workflow's `concurrency` group
+  (`fetch-deals`, `cancel-in-progress: false`) means a manual run started
+  while a scheduled run is still going waits its turn instead of racing it.
+- **DB recovery re-alerts once.** If D1 ever needs to be recreated
+  (corruption, accidental deletion), re-running the migrations rebuilds the
+  schema, but dedupe state (`seen_deal`) is gone. Every deal that currently
+  matches the watchlist will alert again, once, on the next run. This is
+  expected, not a bug.
