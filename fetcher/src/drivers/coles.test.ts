@@ -3,43 +3,26 @@ import { parseColesPayload } from "../../../src/sources/coles.ts";
 import type { PageLike } from "../browser.ts";
 import { SourceError } from "../errors.ts";
 import { driveColes, fetchColes } from "./coles.ts";
+import fixture from "../../../test/fixtures/coles.json";
 
 const COLES_SPECIALS_URL = "https://www.coles.com.au/on-special?filter_Special=halfprice";
-const COLES_GRAPHQL_URL = "https://www.coles.com.au/api/graphql";
 
 /**
- * A fake `PageLike` whose `waitForResponse` walks a fixed list of candidate
- * responses in order, feeding each to the driver's predicate exactly like
- * Playwright's own event-driven `waitForResponse` does, and resolves with
- * the first one the predicate accepts. Throws once the list is exhausted
- * with no match, mirroring a real timeout. No real browser or network.
+ * A fake `PageLike` whose `evaluate` returns `nextDataText` as the text read
+ * off the page's `__NEXT_DATA__` script tag. `null` stands in for a page
+ * with no `__NEXT_DATA__` tag at all (the Incapsula block case). No real
+ * browser or network.
  */
-function makeFakePage(candidates: Array<{ url: string; body: unknown }>): {
-  page: PageLike;
-  gotoUrls: string[];
-} {
+function makeFakePage(nextDataText: string | null): { page: PageLike; gotoUrls: string[] } {
   const gotoUrls: string[] = [];
   const page: PageLike = {
     goto: async (url) => {
       gotoUrls.push(url);
       return { status: () => 200 };
     },
-    evaluate: async () => {
-      throw new Error("evaluate is not used by the Coles driver");
-    },
-    waitForResponse: async (urlOrPredicate) => {
-      const predicate = urlOrPredicate as (response: {
-        url(): string;
-        json(): Promise<unknown>;
-      }) => boolean | Promise<boolean>;
-
-      for (const candidate of candidates) {
-        const response = { url: () => candidate.url, json: async () => candidate.body };
-        if (await predicate(response)) {
-          return response;
-        }
-      }
-      throw new Error("Timeout waiting for a matching response");
+    evaluate: async () => nextDataText,
+    waitForResponse: async () => {
+      throw new Error("waitForResponse is not used by the Coles driver");
     },
     on: () => {},
     close: async () => {},
@@ -47,80 +30,51 @@ function makeFakePage(candidates: Array<{ url: string; body: unknown }>): {
   return { page, gotoUrls };
 }
 
-function product(id: string): Record<string, unknown> {
-  return {
-    id,
-    name: `Product ${id}`,
-    brand: "Test Brand",
-    pricing: { now: 3.5, was: 7 },
-    seoToken: `product-${id}`,
-    onlineHeirs: [{ category: "Pantry" }],
-  };
-}
-
-function productListingBody(products: unknown[], totalCount: number): unknown {
-  return { data: { results: { results: products, totalCount } } };
+function nextDataWith(results: unknown[]): unknown {
+  return { props: { pageProps: { searchResults: { noOfResults: results.length, results } } } };
 }
 
 describe("driveColes", () => {
-  it("returns the third GraphQL response when only it matches the schema, not the first", async () => {
+  it("navigates the specials page and returns the parsed __NEXT_DATA__ object", async () => {
     // Arrange
-    const categoryTreeResponse = {
-      url: COLES_GRAPHQL_URL,
-      body: { data: { categories: [{ id: "petcare", name: "Pet Care", children: [] }] } },
-    };
-    const cartResponse = {
-      url: COLES_GRAPHQL_URL,
-      body: { data: { cart: { itemCount: 3, subtotal: 42.5 } } },
-    };
-    const productListingResponse = {
-      url: COLES_GRAPHQL_URL,
-      body: productListingBody([product("1")], 1),
-    };
-    const { page, gotoUrls } = makeFakePage([categoryTreeResponse, cartResponse, productListingResponse]);
+    const { page, gotoUrls } = makeFakePage(JSON.stringify(fixture));
 
     // Act
     const raw = await driveColes(page);
 
     // Assert
-    expect(raw).toEqual(productListingResponse.body);
+    expect(raw).toEqual(fixture);
     expect(gotoUrls).toEqual([COLES_SPECIALS_URL]);
   });
 
-  it("throws SourceError when no response matches the schema within the bound", async () => {
+  it("throws SourceError when the page has no __NEXT_DATA__ (an Incapsula block page)", async () => {
     // Arrange
-    const nonMatching = [
-      { url: COLES_GRAPHQL_URL, body: { data: { categories: [] } } },
-      { url: COLES_GRAPHQL_URL, body: { data: { cart: { itemCount: 0 } } } },
-    ];
-    const { page } = makeFakePage(nonMatching);
+    const { page } = makeFakePage(null);
 
     // Act
     const error = await driveColes(page).catch((e: unknown) => e);
 
     // Assert
     expect(error).toBeInstanceOf(SourceError);
-    expect((error as SourceError).message).not.toMatch(/reese84|incap_ses|visid_incap|nlbi/i);
   });
 });
 
 describe("fetchColes", () => {
-  it("flows the matched response through parseColesPayload into RawDeal[]", async () => {
+  it("flows the fixture's __NEXT_DATA__ through parseColesPayload into RawDeal[]", async () => {
     // Arrange
-    const body = productListingBody([product("1"), product("2")], 2);
-    const { page } = makeFakePage([{ url: COLES_GRAPHQL_URL, body }]);
+    const { page } = makeFakePage(JSON.stringify(fixture));
 
     // Act
     const deals = await fetchColes(page);
 
     // Assert
-    expect(deals).toEqual(parseColesPayload(body));
+    expect(deals).toEqual(parseColesPayload(fixture));
   });
 
-  it("throws a soft-block SourceError, not a healthy empty success, when the matched response has 0 products", async () => {
+  it("throws a soft-block SourceError, not a healthy empty success, when results[] has no products", async () => {
     // Arrange
-    const body = productListingBody([], 0);
-    const { page } = makeFakePage([{ url: COLES_GRAPHQL_URL, body }]);
+    const nextData = nextDataWith([{ _type: "SINGLE_TILE", id: 0, name: "ad tile" }]);
+    const { page } = makeFakePage(JSON.stringify(nextData));
 
     // Act
     const error = await fetchColes(page).catch((e: unknown) => e);

@@ -10,68 +10,99 @@ import { toCents } from "../core/price";
  */
 
 /**
- * PLACEHOLDER SCHEMA, HIGH UNCERTAINTY, CARRIED OVER FROM V1 UNCHANGED. The
- * only Coles request ever captured is the `GetProductCategories` operation
- * (department tree), NOT the half-price product-listing operation actually
- * fired by `/on-special?filter_Special=halfprice` (plan Capture notes,
- * 2026-07-31; plan Assumption 15). A prior spike (this plan) confirmed the
- * half-price page itself renders through Browser Rendering without being
- * blocked, but did NOT capture or verify the GraphQL response body. This
- * schema is therefore still a best-effort guess, not a captured payload, and
- * is deliberately kept as v1 left it rather than re-guessed here — there is
- * no way to verify a "more correct" shape from this environment either.
- * Assumptions to revisit once the real product-listing request/response is
- * captured:
- *   - The listing operation returns `data.results.results[]` (a paged
- *     search-result envelope) alongside a `totalCount`, mirroring common
- *     Coles GraphQL product-search shapes.
- *   - Each product carries `pricing.now` / `pricing.was` as decimal dollar
- *     amounts (not cents), with `was` null when a product isn't discounted.
- *   - `seoToken` is a slug usable as `/product/<seoToken>`.
- *   - `onlineHeirs` is the category breadcrumb; its first entry's
- *     `category` is treated as the department. It may be empty.
- * Refine this schema and test/fixtures/coles.json together once a real
- * response body has been captured from the site's own GraphQL call (DevTools
- * Network tab on `/on-special?filter_Special=halfprice`).
+ * Schema verified against a real capture of
+ * https://www.coles.com.au/on-special?filter_Special=halfprice taken
+ * 2026-08-11 (see test/fixtures/coles.json). The half-price listing is
+ * server-rendered into the page's __NEXT_DATA__ script tag at
+ * `props.pageProps.searchResults`, not returned by a GraphQL call.
  */
-const ColesProductSchema = z.object({
+const ColesResultEntrySchema = z.object({
+  _type: z.string(),
   id: z.union([z.number(), z.string()]),
-  name: z.string(),
-  brand: z.string().nullable().default(null),
-  pricing: z.object({
-    now: z.number(),
-    was: z.number().nullable().default(null),
-  }),
-  seoToken: z.string(),
+  name: z.string().optional(),
+  brand: z.string().nullable().optional(),
+  size: z.string().nullable().optional(),
   onlineHeirs: z.array(z.object({ category: z.string() })).default([]),
+  pricing: z
+    .object({
+      now: z.number(),
+      was: z.number().nullable().default(null),
+    })
+    .optional(),
 });
 
 const ColesPayloadSchema = z.object({
-  data: z.object({
-    results: z.object({
-      results: z.array(ColesProductSchema),
-      totalCount: z.number().optional(),
+  props: z.object({
+    pageProps: z.object({
+      searchResults: z.object({
+        noOfResults: z.number(),
+        results: z.array(ColesResultEntrySchema),
+      }),
     }),
   }),
 });
 
 /**
- * Validates and maps a Coles product-search response into RawDeal[]. Pure:
- * no I/O. Throws a Zod error on a malformed entry or a wholly invalid
- * payload. `discountPercent` is always null (normalize derives it from
+ * The strict shape a `_type === "PRODUCT"` entry must match. Applied only
+ * after the permissive `ColesResultEntrySchema` above has already let
+ * `SINGLE_TILE` and `CONTENT_ASSOCIATION` entries through untouched, so a
+ * product missing `pricing` still throws.
+ */
+const ColesProductSchema = z.object({
+  id: z.union([z.number(), z.string()]),
+  name: z.string(),
+  brand: z.string().nullable().default(null),
+  size: z.string().nullable().default(null),
+  onlineHeirs: z.array(z.object({ category: z.string() })).default([]),
+  pricing: z.object({
+    now: z.number(),
+    was: z.number().nullable().default(null),
+  }),
+});
+
+/** Lowercases, replaces every run of non-alphanumeric characters with one hyphen, and trims. */
+function slugify(value: string): string {
+  return value
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/^-+|-+$/g, "");
+}
+
+/**
+ * Builds the real product URL: `kebab-case(brand + name + size) + "-" + id`.
+ * Missing brand or size is dropped before joining, so it never leaves a
+ * double hyphen or a leading hyphen (confirmed against two real products).
+ */
+function buildProductUrl(product: z.infer<typeof ColesProductSchema>): string {
+  const slug = slugify([product.brand, product.name, product.size].filter(Boolean).join(" "));
+  return `https://www.coles.com.au/product/${slug}-${product.id}`;
+}
+
+/**
+ * Validates and maps a Coles __NEXT_DATA__ payload into RawDeal[]. Pure: no
+ * I/O. `results[]` is mixed (PRODUCT, SINGLE_TILE, CONTENT_ASSOCIATION); only
+ * PRODUCT entries become deals, and each is re-validated against the strict
+ * `ColesProductSchema` so a malformed product still throws. Throws a Zod
+ * error on a malformed product or a wholly invalid payload.
+ * `discountPercent` is always null (normalize derives it from
  * priceCents/wasPriceCents, matching the other sources).
  */
 export function parseColesPayload(json: unknown): RawDeal[] {
   const payload = ColesPayloadSchema.parse(json);
 
-  return payload.data.results.results.map((product): RawDeal => ({
-    source: "coles",
-    title: product.name,
-    url: `https://www.coles.com.au/product/${product.seoToken}`,
-    store: "Coles",
-    department: product.onlineHeirs[0]?.category ?? null,
-    priceCents: toCents(product.pricing.now),
-    wasPriceCents: toCents(product.pricing.was),
-    discountPercent: null,
-  }));
+  return payload.props.pageProps.searchResults.results
+    .filter((entry) => entry._type === "PRODUCT")
+    .map((entry): RawDeal => {
+      const product = ColesProductSchema.parse(entry);
+      return {
+        source: "coles",
+        title: product.name,
+        url: buildProductUrl(product),
+        store: "Coles",
+        department: product.onlineHeirs[0]?.category ?? null,
+        priceCents: toCents(product.pricing.now),
+        wasPriceCents: toCents(product.pricing.was),
+        discountPercent: null,
+      };
+    });
 }
