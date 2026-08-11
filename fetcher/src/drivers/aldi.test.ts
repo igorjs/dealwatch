@@ -121,6 +121,32 @@ describe("driveAldi", () => {
     expect(error).toBeInstanceOf(SourceError);
     expect((error as SourceError).message).not.toContain("Access Denied");
   });
+
+  it("stops at the page cap when the feed never reports a totalCount and never returns a short page", async () => {
+    // Arrange: every page is full (30 items) and carries no totalCount, so
+    // neither normal termination condition can ever fire.
+    const profile: AldiStoreProfile = { servicePoint: "G452", categoryKeys: ["1588161420755352"] };
+    const endlessFullPage = JSON.stringify({
+      data: Array.from({ length: 30 }, (_unused, i) => product(`endless-${i}`)),
+      meta: {},
+    });
+    const gotoUrls: string[] = [];
+    const page: PageLike = {
+      goto: async (url) => {
+        gotoUrls.push(url);
+        return { status: () => 200 };
+      },
+      evaluate: async () => endlessFullPage,
+      close: async () => {},
+    };
+
+    // Act
+    const result = await driveAldi(page, profile);
+
+    // Assert
+    expect(gotoUrls).toHaveLength(20);
+    expect(result.data).toHaveLength(600);
+  });
 });
 
 describe("fetchAldi", () => {
