@@ -12,6 +12,18 @@ import { SourceError, zeroDealSoftBlock } from "../errors.ts";
  * request this page fires on load is the category tree (the same operation
  * v1 captured), not the product listing (verified 2026-08-11 against the
  * live page's `performance.getEntriesByType("resource")`).
+ *
+ * ONLY PAGE ONE IS FETCHED, about 48 of roughly 894 half-price products, and
+ * that is deliberate. The site does page by `&page=N` (verified: page 2
+ * returns 48 different products, `start: 1`), but Coles velocity-blocks a
+ * session after only a handful of quick navigations. Loading pages 1, 2 and
+ * 19 back to back got an Incapsula block, and the block then covered page 1
+ * too, which had loaded fine moments earlier, and had not lifted 45 seconds
+ * later (measured 2026-08-11). Looping 19 pages unthrottled would therefore
+ * turn a partial fetch into no fetch at all. Adding paging needs a real
+ * delay between pages AND evidence from a GitHub runner IP about the
+ * threshold and the block's decay, which only a live `workflow_dispatch` can
+ * give. Do not add it from a guess.
  */
 const COLES_SPECIALS_URL = "https://www.coles.com.au/on-special?filter_Special=halfprice";
 

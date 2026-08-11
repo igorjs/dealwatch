@@ -30,6 +30,16 @@ at all. Coles and Woolworths sit behind cookie-gated anti-bot protection
 pipeline showed a plain HTTP request gets blocked regardless of IP or
 headers, while a real browser session mints valid cookies on its own.
 
+**Known coverage gap: Coles returns page 1 only**, about 48 of roughly 894
+half-price products. Woolworths and Aldi page fully; Coles does not. The site
+supports `&page=N`, but it velocity-blocks a session after a handful of quick
+navigations, and the block then covers the pages that worked a moment
+earlier. Loading three pages back to back was enough to trigger it on
+2026-08-11. So paging Coles needs a real delay between pages plus evidence
+from a GitHub runner IP about the threshold and how long the block lasts.
+Until someone has that evidence from a live run, leave it at one page: a
+partial fetch beats a blocked one.
+
 ## Layout
 
 - `src/types.ts`: Zod schemas and inferred types for every boundary value
