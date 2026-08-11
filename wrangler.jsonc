@@ -4,11 +4,6 @@
   "main": "src/index.ts",
   "compatibility_date": "2026-08-04",
   "compatibility_flags": ["nodejs_compat"],
-  // Browser Rendering binding, used by @cloudflare/puppeteer to drive a
-  // headless browser for scraping store deal pages.
-  "browser": {
-    "binding": "BROWSER"
-  },
   "d1_databases": [
     {
       "binding": "DB",
@@ -24,9 +19,5 @@
       "binding": "LIST",
       "bucket_name": "dealwatch-shopping-list"
     }
-  ],
-  "triggers": {
-    // Wed and Sat, 19:00 UTC.
-    "crons": ["0 19 * * 3", "0 19 * * 6"]
-  }
+  ]
 }
