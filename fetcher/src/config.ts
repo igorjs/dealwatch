@@ -1,4 +1,9 @@
-import { AldiStoreProfileSchema, type AldiStoreProfile } from "../../src/types.ts";
+import {
+  AldiStoreProfileSchema,
+  type AldiStoreProfile,
+  StoreProfileSchema,
+  type StoreProfile,
+} from "../../src/types.ts";
 
 /**
  * The Aldi store profile the fetcher's driver needs to build the
@@ -18,4 +23,15 @@ export const aldiProfile: AldiStoreProfile = AldiStoreProfileSchema.parse({
     "1588161426952145", // Super Savers
     "1588161420755352", // Limited Time Only
   ],
+});
+
+/**
+ * The Woolworths store profile the fetcher's driver needs: the category API
+ * endpoint the driver POSTs against in-page, after first warming the
+ * half-price page's Akamai session (see `fetcher/src/drivers/woolworths.ts`).
+ * Mirrors the value in the Worker's own `src/config.ts` so both sides
+ * describe the same store.
+ */
+export const woolworthsProfile: StoreProfile = StoreProfileSchema.parse({
+  url: "https://www.woolworths.com.au/apis/ui/browse/category",
 });
