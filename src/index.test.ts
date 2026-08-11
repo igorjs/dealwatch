@@ -2,18 +2,14 @@ import { env } from "cloudflare:workers";
 import {
   applyD1Migrations,
   createExecutionContext,
-  createScheduledController,
   waitOnExecutionContext,
 } from "cloudflare:test";
 import type { D1Migration } from "@cloudflare/vitest-pool-workers";
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { createHandler, runOnePass } from "./index";
-import type { BrowserSession, PageLike } from "./browser";
-import { LIST_KEY, readList } from "./listStore";
-import { runPipeline } from "./pipeline";
-import { filterNew, getHealth, recordAttempt } from "./store";
-import type { Config, Deal, RawDeal } from "./types";
-import { normalize } from "./core/normalize";
+import { createHandler } from "./index";
+import { LIST_KEY } from "./listStore";
+import { getHealth, recordAttempt } from "./store";
+import type { RawDeal } from "./types";
 
 // `TEST_MIGRATIONS` is a test-only binding wired in vitest.config.ts, same
 // pattern as store.test.ts / pipeline.test.ts.
@@ -63,23 +59,6 @@ function authedRequest(path: string, init: RequestInit = {}): IncomingRequest {
   }) as IncomingRequest;
 }
 
-/** A no-op BrowserSession/PageLike: fetchers are swapped separately so the real page API is never exercised. */
-function fakeBrowser(): BrowserSession {
-  const page: PageLike = {
-    goto: vi.fn().mockResolvedValue({ status: () => 200 }),
-    evaluate: vi.fn().mockResolvedValue(undefined),
-    waitForResponse: vi.fn().mockResolvedValue({
-      url: () => "https://example.com",
-      json: () => Promise.resolve({}),
-    }),
-    close: vi.fn().mockResolvedValue(undefined),
-  };
-  return {
-    newPage: vi.fn().mockResolvedValue(page),
-    close: vi.fn().mockResolvedValue(undefined),
-  };
-}
-
 describe("worker scaffold", () => {
   it("boots the vitest-pool-workers harness with D1 and R2 bindings wired", () => {
     // Arrange: bindings come from wrangler.jsonc via the vitest-pool-workers
@@ -96,79 +75,11 @@ describe("worker scaffold", () => {
   });
 });
 
-describe("fetch: POST /run", () => {
-  it("returns 401 when the Authorization header is missing", async () => {
-    // Arrange
+describe("fetch: POST /run (route removed)", () => {
+  it("returns 404 for a valid bearer token, proving auth is not what rejects it", async () => {
+    // Arrange: the route is gone entirely, so even a correctly authed
+    // request must fall through to the unknown-route 404, not a 401.
     const handler = createHandler();
-    const request = plainRequest("/run", { method: "POST" });
-    const ctx = createExecutionContext();
-
-    // Act
-    const response = await handler.fetch!(request, testWorkerEnv(), ctx);
-    await waitOnExecutionContext(ctx);
-
-    // Assert
-    expect(response.status).toBe(401);
-  });
-
-  it("returns 401 (same status as missing) when the bearer token is present but wrong", async () => {
-    // Arrange
-    const handler = createHandler();
-    const request = plainRequest("/run", {
-      method: "POST",
-      headers: { Authorization: "Bearer wrong-token" },
-    });
-    const ctx = createExecutionContext();
-
-    // Act
-    const response = await handler.fetch!(request, testWorkerEnv(), ctx);
-    await waitOnExecutionContext(ctx);
-
-    // Assert
-    expect(response.status).toBe(401);
-  });
-
-  it("with a valid bearer, drives the pipeline through a fake browser/fetcher and returns 200 with the summary", async () => {
-    // Arrange: a fake browser (via `launchFn`) and a fake `aldi` fetcher
-    // (via `PipelineDeps.fetchers`, threaded through `runPipelineFn`) so the
-    // real route — auth, `runOnePass`, `runPipeline`, D1/R2 writes — runs
-    // end to end without ever driving real Browser Rendering.
-    const dealUrl = `https://example.com/deal/${crypto.randomUUID()}`;
-    const matchingDeal: RawDeal = {
-      source: "aldi",
-      title: "Extra Virgin Olive Oil 1L",
-      url: dealUrl,
-      store: "Aldi Example",
-      department: null,
-      priceCents: 500,
-      wasPriceCents: 1000,
-      discountPercent: 50,
-    };
-    const listKey = `list-${crypto.randomUUID()}.json`;
-    const handler = createHandler({
-      launchFn: vi.fn().mockResolvedValue(fakeBrowser()),
-      buildConfigFn: (e) => ({
-        watchlist: [{ term: "olive oil", minDiscountPercent: 0, exclude: [] }],
-        ntfy: { topicUrl: e.NTFY_TOPIC_URL },
-        stores: {
-          aldi: { servicePoint: "G452", categoryKeys: ["cat-1"] },
-          coles: { url: "https://www.coles.com.au/on-special?filter_Special=halfprice" },
-          woolworths: { url: "https://www.woolworths.com.au/apis/ui/browse/category" },
-        },
-      }),
-      // Delegate to the real runPipeline, just with fakes injected for
-      // fetchers/listKey — same seam pipeline.test.ts uses.
-      runPipelineFn: (deps) =>
-        runPipeline({
-          ...deps,
-          listKey,
-          fetchers: {
-            aldi: vi.fn().mockResolvedValue([matchingDeal]),
-            woolworths: vi.fn().mockResolvedValue([]),
-            coles: vi.fn().mockResolvedValue([]),
-          },
-        }),
-    });
     const request = authedRequest("/run", { method: "POST" });
     const ctx = createExecutionContext();
 
@@ -176,41 +87,17 @@ describe("fetch: POST /run", () => {
     const response = await handler.fetch!(request, testWorkerEnv(), ctx);
     await waitOnExecutionContext(ctx);
 
-    // Assert: 200 with the summary, and D1/R2 were actually touched.
-    expect(response.status).toBe(200);
-    const body = (await response.json()) as { fetched: number; matched: number };
-    expect(body.fetched).toBe(1);
-    expect(body.matched).toBe(1);
-
-    const grouped = await readList(env.LIST, listKey);
-    const allItems = Object.values(grouped).flat();
-    expect(allItems.some((item) => item.url === dealUrl)).toBe(true);
+    // Assert
+    expect(response.status).toBe(404);
   });
 
-  it("returns a 500 with a logged, non-throwing error when runOnePass throws, instead of an unhandled exception", async () => {
-    // Arrange: authed, but launchFn rejects (e.g. Browser Rendering
-    // unavailable) — unlike scheduled (which has no response to send and
-    // so only logs + best-effort crash-notifies), a POST /run caller is
-    // waiting on a response, so this must become a clean 500, not an
-    // uncaught throw out of the fetch handler.
-    const consoleErrorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
-    const handler = createHandler({
-      launchFn: vi.fn().mockRejectedValue(new Error("Browser Rendering unavailable")),
-    });
-    const request = authedRequest("/run", { method: "POST" });
-    const ctx = createExecutionContext();
+  it("has no scheduled property on the exported handler", () => {
+    // Arrange + Act: GitHub Actions is the sole scheduler now, so there is
+    // no Cron `scheduled` handler left to export.
+    const handler = createHandler();
 
-    // Act
-    const response = await handler.fetch!(request, testWorkerEnv(), ctx);
-    await waitOnExecutionContext(ctx);
-
-    // Assert: 500, JSON body names the failure, and it was logged.
-    expect(response.status).toBe(500);
-    const body = (await response.json()) as { error: string };
-    expect(body.error).toContain("Browser Rendering unavailable");
-    expect(consoleErrorSpy).toHaveBeenCalled();
-
-    consoleErrorSpy.mockRestore();
+    // Assert
+    expect("scheduled" in handler).toBe(false);
   });
 });
 
@@ -362,16 +249,17 @@ describe("fetch: POST /ingest", () => {
     await waitOnExecutionContext(ctx);
 
     // Assert: 200 with the summary the fake returned, and the fake was
-    // actually driven with the parsed (and reshaped) results.
+    // actually driven with the parsed body's results, passed straight
+    // through with no reshaping.
     expect(response.status).toBe(200);
     const body = await response.json();
     expect(body).toEqual(summary);
     expect(processSourceResultsFn).toHaveBeenCalledTimes(1);
     const [, results] = processSourceResultsFn.mock.calls[0] as [unknown, unknown];
     expect(results).toEqual([
-      { source: "aldi", status: "fulfilled", value: [deal] },
+      { source: "aldi", status: "fulfilled", deals: [deal] },
       { source: "coles", status: "rejected", reason: "timed out" },
-      { source: "woolworths", status: "fulfilled", value: [] },
+      { source: "woolworths", status: "fulfilled", deals: [] },
     ]);
   });
 
@@ -466,8 +354,7 @@ describe("fetch: POST /ingest", () => {
   it("returns 200 and records source_health failures when every result in a valid body is rejected", async () => {
     // Arrange: no processSourceResultsFn override, so the real
     // processSourceResults (from src/pipeline.ts) runs against the real D1
-    // binding, the same way the POST /run tests above drive the real
-    // runPipeline through a fake browser/fetcher.
+    // binding.
     const handler = createHandler({
       buildConfigFn: (e) => ({
         watchlist: [{ term: "unmatched-term-xyz", minDiscountPercent: 0, exclude: [] }],
@@ -510,270 +397,6 @@ describe("fetch: POST /ingest", () => {
     const health = await getHealth(testEnv.DB);
     const aldiHealth = health.find((entry) => entry.source === "aldi");
     expect(aldiHealth?.consecutiveFailures).toBeGreaterThanOrEqual(1);
-  });
-});
-
-describe("scheduled: end-to-end across all three sources", () => {
-  /**
-   * One matching RawDeal per source, each with a distinct department so
-   * `toCategory` maps them to distinct shared categories (proving `readList`
-   * groups by category rather than just flattening). Titles all contain
-   * "bargain widget" so a single watch term matches all three.
-   */
-  function fixtureDeals(runId: string): Record<"aldi" | "woolworths" | "coles", RawDeal> {
-    return {
-      aldi: {
-        source: "aldi",
-        title: "Bargain Widget Aldi Special",
-        url: `https://example.com/aldi/${runId}`,
-        store: "Aldi Example",
-        department: "Produce",
-        priceCents: 300,
-        wasPriceCents: 600,
-        discountPercent: 50,
-      },
-      woolworths: {
-        source: "woolworths",
-        title: "Bargain Widget Woolworths Special",
-        url: `https://example.com/woolworths/${runId}`,
-        store: "Woolworths Example",
-        department: "Meat & Seafood",
-        priceCents: 400,
-        wasPriceCents: 800,
-        discountPercent: 50,
-      },
-      coles: {
-        source: "coles",
-        title: "Bargain Widget Coles Special",
-        url: `https://example.com/coles/${runId}`,
-        store: "Coles Example",
-        department: "Bakery",
-        priceCents: 250,
-        wasPriceCents: 500,
-        discountPercent: 50,
-      },
-    };
-  }
-
-  function fixtureConfig(env: Pick<Env, "NTFY_TOPIC_URL">): Config {
-    return {
-      watchlist: [{ term: "bargain widget", minDiscountPercent: 0, exclude: [] }],
-      ntfy: { topicUrl: env.NTFY_TOPIC_URL },
-      stores: {
-        aldi: { servicePoint: "G452", categoryKeys: ["cat-1"] },
-        coles: { url: "https://www.coles.com.au/on-special?filter_Special=halfprice" },
-        woolworths: { url: "https://www.woolworths.com.au/apis/ui/browse/category" },
-      },
-    };
-  }
-
-  it("populates D1 seen_deal, writes R2 grouped by category, and fires one push covering all matches; a second identical pass is a dedup no-op", async () => {
-    // Arrange: unique R2 key + unique deal urls for this test's isolated
-    // slice of the shared per-file D1/R2 storage.
-    const runId = crypto.randomUUID();
-    const deals = fixtureDeals(runId);
-    const listKey = `list-scheduled-${runId}.json`;
-    const pushFn = vi.fn().mockResolvedValue(undefined);
-
-    const handler = createHandler({
-      launchFn: vi.fn().mockResolvedValue(fakeBrowser()),
-      buildConfigFn: fixtureConfig,
-      runPipelineFn: (deps) =>
-        runPipeline({
-          ...deps,
-          listKey,
-          pushFn,
-          fetchers: {
-            aldi: vi.fn().mockResolvedValue([deals.aldi]),
-            woolworths: vi.fn().mockResolvedValue([deals.woolworths]),
-            coles: vi.fn().mockResolvedValue([deals.coles]),
-          },
-        }),
-    });
-
-    // Act: pass 1 — a full scheduled() run via the real Cron entry point.
-    const controller = createScheduledController();
-    const ctx = createExecutionContext();
-    await handler.scheduled!(controller, testWorkerEnv(), ctx);
-    await waitOnExecutionContext(ctx);
-
-    // Assert: R2 holds all three deals, grouped by category (distinct
-    // categories per source's department, not just flat presence).
-    const grouped = await readList(env.LIST, listKey);
-    expect(grouped["fruit-veg"]?.map((item) => item.url)).toEqual([
-      deals.aldi.url,
-    ]);
-    expect(grouped["meat-seafood"]?.map((item) => item.url)).toEqual([
-      deals.woolworths.url,
-    ]);
-    expect(grouped["bakery"]?.map((item) => item.url)).toEqual([
-      deals.coles.url,
-    ]);
-
-    // Assert: exactly one push fired, covering all three matched deals.
-    expect(pushFn).toHaveBeenCalledTimes(1);
-    const [pushMessage] = pushFn.mock.calls[0] as [string, string];
-    expect(pushMessage).toContain("3 new matching deal(s)");
-    expect(pushMessage).toContain("Bargain Widget Aldi Special");
-    expect(pushMessage).toContain("Bargain Widget Woolworths Special");
-    expect(pushMessage).toContain("Bargain Widget Coles Special");
-
-    // Assert: D1 seen_deal now has rows for all three deals — filterNew on
-    // the same (normalized) deals returns nothing left to filter.
-    const now = new Date();
-    const normalized: Deal[] = [
-      normalize(deals.aldi, now),
-      normalize(deals.woolworths, now),
-      normalize(deals.coles, now),
-    ];
-    const stillNew = await filterNew(testEnv.DB, normalized);
-    expect(stillNew).toEqual([]);
-
-    // Act: pass 2 — identical fetcher results, same listKey, same pushFn spy.
-    const controller2 = createScheduledController();
-    const ctx2 = createExecutionContext();
-    await handler.scheduled!(controller2, testWorkerEnv(), ctx2);
-    await waitOnExecutionContext(ctx2);
-
-    // Assert: dedup no-op — no new push (matched.length === 0 on pass 2
-    // skips the whole push/R2 block entirely), no error, call count
-    // unchanged from pass 1.
-    expect(pushFn).toHaveBeenCalledTimes(1);
-    const groupedAfterSecondPass = await readList(env.LIST, listKey);
-    expect(groupedAfterSecondPass).toEqual(grouped);
-  });
-
-  it("does not rethrow when buildConfig throws (crash-notify best-effort path)", async () => {
-    // Arrange: buildConfigFn throws before any pipeline work happens, so
-    // scheduled's catch block runs with `config` still undefined — no
-    // crash-notify push is even attempted (see src/index.ts's `scheduled`).
-    const buildConfigFn = vi.fn(() => {
-      throw new Error("bad NTFY_TOPIC_URL secret");
-    });
-    const handler = createHandler({ buildConfigFn });
-    const controller = createScheduledController();
-    const ctx = createExecutionContext();
-
-    // Act + Assert: resolves (does not reject/throw) despite the failure.
-    await expect(
-      handler.scheduled!(controller, testWorkerEnv(), ctx),
-    ).resolves.toBeUndefined();
-    await waitOnExecutionContext(ctx);
-    // buildConfigFn threw before `config` could be assigned, so scheduled's
-    // catch block skips the crash-notify push entirely (see src/index.ts:
-    // `if (config !== undefined)`) — nothing else to assert here without a
-    // real ntfy endpoint; the non-throw above is the behavior under test.
-  });
-
-  it("best-effort crash-notify pushes when config built fine but something downstream throws", async () => {
-    // Arrange: buildConfigFn succeeds (a real topicUrl exists), but
-    // launchFn rejects — this is the branch the buildConfig-throws test
-    // above does NOT cover (there, config stays undefined and no push is
-    // even attempted). `scheduled`'s catch block calls the real `push()`
-    // directly (no injectable seam), so the network boundary under test is
-    // the global `fetch` it uses internally.
-    const fetchSpy = vi.fn().mockResolvedValue(new Response(null, { status: 200 }));
-    vi.stubGlobal("fetch", fetchSpy);
-    const consoleErrorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
-    const handler = createHandler({
-      launchFn: vi.fn().mockRejectedValue(new Error("Browser Rendering unavailable")),
-    });
-    const controller = createScheduledController();
-    const ctx = createExecutionContext();
-
-    try {
-      // Act + Assert: resolves (never rethrows) despite the downstream failure.
-      await expect(
-        handler.scheduled!(controller, testWorkerEnv(), ctx),
-      ).resolves.toBeUndefined();
-      await waitOnExecutionContext(ctx);
-
-      // Assert: the real push() fired once, to the configured ntfy topic,
-      // with a message naming the underlying error.
-      expect(fetchSpy).toHaveBeenCalledTimes(1);
-      const [pushedUrl, pushedInit] = fetchSpy.mock.calls[0] as [string, RequestInit];
-      expect(pushedUrl).toBe("https://ntfy.sh/dealwatch-test-topic");
-      expect(String(pushedInit.body)).toContain("crashed");
-      expect(String(pushedInit.body)).toContain("Browser Rendering unavailable");
-    } finally {
-      vi.unstubAllGlobals();
-      consoleErrorSpy.mockRestore();
-    }
-  });
-
-  it("swallows a crash-notify push failure instead of rethrowing it", async () => {
-    // Arrange: both launchFn AND the crash-notify push itself fail — the
-    // secondary push failure must be logged and swallowed, not let escape
-    // scheduled() as an unhandled rejection.
-    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(new Response(null, { status: 500 })));
-    const consoleErrorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
-    const handler = createHandler({
-      launchFn: vi.fn().mockRejectedValue(new Error("Browser Rendering unavailable")),
-    });
-    const controller = createScheduledController();
-    const ctx = createExecutionContext();
-
-    try {
-      // Act + Assert: still resolves, even though the crash-notify push
-      // itself failed (a 500 makes push() throw, per src/push.ts).
-      await expect(
-        handler.scheduled!(controller, testWorkerEnv(), ctx),
-      ).resolves.toBeUndefined();
-      await waitOnExecutionContext(ctx);
-
-      // Assert: both the original failure and the secondary push failure
-      // were logged.
-      expect(consoleErrorSpy).toHaveBeenCalledWith(
-        "dealwatch: uncaught error during scheduled run:",
-        expect.anything(),
-      );
-      expect(consoleErrorSpy).toHaveBeenCalledWith(
-        "dealwatch: crash-notify push also failed:",
-        expect.anything(),
-      );
-    } finally {
-      vi.unstubAllGlobals();
-      consoleErrorSpy.mockRestore();
-    }
-  });
-});
-
-describe("runOnePass", () => {
-  it("closes the browser session (not just its pages) after a successful pass", async () => {
-    // Arrange
-    const browser = fakeBrowser();
-    const summary = { fetched: 0, matched: 0, sourceFailures: [] };
-    const runPipelineFn = vi.fn().mockResolvedValue(summary);
-
-    // Act
-    const result = await runOnePass(testWorkerEnv(), {
-      launchFn: vi.fn().mockResolvedValue(browser),
-      runPipelineFn,
-    });
-
-    // Assert
-    expect(result).toEqual(summary);
-    expect(runPipelineFn).toHaveBeenCalledTimes(1);
-    const call = runPipelineFn.mock.calls[0]?.[0];
-    expect(call.db).toBe(testEnv.DB);
-    expect(call.bucket).toBe(env.LIST);
-    expect(call.browser).toBe(browser);
-    expect(browser.close).toHaveBeenCalledTimes(1);
-  });
-
-  it("closes the browser session even when runPipeline throws", async () => {
-    // Arrange
-    const browser = fakeBrowser();
-    const runPipelineFn = vi.fn().mockRejectedValue(new Error("pipeline boom"));
-
-    // Act + Assert
-    await expect(
-      runOnePass(testWorkerEnv(), {
-        launchFn: vi.fn().mockResolvedValue(browser),
-        runPipelineFn,
-      }),
-    ).rejects.toThrow("pipeline boom");
-    expect(browser.close).toHaveBeenCalledTimes(1);
   });
 });
 
