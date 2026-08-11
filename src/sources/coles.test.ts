@@ -45,6 +45,37 @@ describe("parseColesPayload", () => {
     );
   });
 
+  // `brand` and `size` are both nullable in the real payload, and the url is
+  // what `stableId` hashes into the dedupe key. A slug that gains a doubled
+  // or leading hyphen would change the id and re-alert an already-seen deal,
+  // so these cases are pinned rather than left to the doc comment.
+  it.each([
+    ["a null brand", null, "400g", "muffins-english-400g-332394"],
+    ["a null size", "Tip Top", null, "tip-top-muffins-english-332394"],
+    ["neither brand nor size", null, null, "muffins-english-332394"],
+  ])("builds a clean url slug for a product with %s", (_case, brand, size, expectedSlug) => {
+    // Arrange
+    const payload = payloadWith([
+      {
+        _type: "PRODUCT",
+        id: 332394,
+        name: "Muffins English",
+        brand,
+        size,
+        onlineHeirs: [],
+        pricing: { now: 3.2, was: 6.4 },
+      },
+    ]);
+
+    // Act
+    const deals = parseColesPayload(payload);
+
+    // Assert
+    expect(deals[0]?.url).toBe(`https://www.coles.com.au/product/${expectedSlug}`);
+    expect(deals[0]?.url).not.toContain("--");
+    expect(deals[0]?.url).not.toContain("/product/-");
+  });
+
   it("gives a product with an empty onlineHeirs a null department instead of throwing", () => {
     // Arrange
     const payload = payloadWith([

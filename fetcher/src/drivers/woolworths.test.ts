@@ -123,6 +123,45 @@ describe("driveWoolworths", () => {
     expect(calls.filter((c) => c === "evaluate")).toHaveLength(90);
     expect(merged.bundles).toHaveLength(90);
   });
+
+  it("keeps paging when page 1 omits totalRecordCount, instead of stopping after one page", async () => {
+    // Arrange: three full pages then an empty one, and the feed never
+    // reports a total. Treating an unreported total as 0 would stop after
+    // page 1 and silently drop the rest.
+    const profile: StoreProfile = { url: CATEGORY_URL };
+    const responses = [
+      { status: 200, body: { bundles: [{ products: [product(1), product(2)] }] } },
+      { status: 200, body: { bundles: [{ products: [product(3), product(4)] }] } },
+      { status: 200, body: { bundles: [{ products: [product(5), product(6)] }] } },
+      { status: 200, body: { bundles: [] } },
+    ];
+    const { page, calls } = makeFakePage(responses);
+
+    // Act
+    const merged = await driveWoolworths(page, profile);
+
+    // Assert
+    expect(calls.filter((c) => c === "evaluate")).toHaveLength(4);
+    expect(merged.bundles).toHaveLength(3);
+    expect(merged.totalRecordCount).toBe(0);
+  });
+
+  it("stops on an empty page even when totalRecordCount claims more records remain", async () => {
+    // Arrange
+    const profile: StoreProfile = { url: CATEGORY_URL };
+    const responses = [
+      { status: 200, body: rawPage([product(1)], 10_000_000) },
+      { status: 200, body: { bundles: [] } },
+    ];
+    const { page, calls } = makeFakePage(responses);
+
+    // Act
+    const merged = await driveWoolworths(page, profile);
+
+    // Assert
+    expect(calls.filter((c) => c === "evaluate")).toHaveLength(2);
+    expect(merged.bundles).toHaveLength(1);
+  });
 });
 
 describe("fetchWoolworths", () => {
