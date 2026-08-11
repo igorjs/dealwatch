@@ -1,7 +1,7 @@
 import type { RawDeal, StoreProfile } from "../../../src/types.ts";
 import { parseWoolworthsPayload } from "../../../src/sources/woolworths.ts";
 import type { PageLike } from "../browser.ts";
-import { SourceError } from "../errors.ts";
+import { SourceError, zeroDealSoftBlock } from "../errors.ts";
 
 /**
  * The human-facing half-price specials page. `driveWoolworths` navigates
@@ -188,7 +188,7 @@ export async function fetchWoolworths(page: PageLike, profile: StoreProfile): Pr
   const deals = parseWoolworthsPayload(merged);
 
   if (deals.length === 0 && merged.totalRecordCount === 0) {
-    throw new SourceError("woolworths", "woolworths returned 0 deals (possible soft bot-block)");
+    throw zeroDealSoftBlock("woolworths");
   }
 
   return deals;

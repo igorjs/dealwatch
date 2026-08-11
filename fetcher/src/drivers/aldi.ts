@@ -1,7 +1,7 @@
 import type { AldiStoreProfile, RawDeal } from "../../../src/types.ts";
 import { parseAldiPayload } from "../../../src/sources/aldi.ts";
 import type { PageLike } from "../browser.ts";
-import { SourceError } from "../errors.ts";
+import { SourceError, zeroDealSoftBlock } from "../errors.ts";
 
 /**
  * `api.aldi.com.au` is a different origin from `www.aldi.com.au`, so an
@@ -65,11 +65,23 @@ async function readPage(page: PageLike, url: string): Promise<AldiRawPage> {
   await page.goto(url);
   const body = (await page.evaluate(() => document.body.innerText)) as string;
 
+  let parsed: unknown;
   try {
-    return JSON.parse(body) as AldiRawPage;
+    parsed = JSON.parse(body);
   } catch {
     throw new SourceError("aldi", "non-JSON response, likely a bot challenge page");
   }
+
+  // Check the one field the paging loop below relies on, rather than casting
+  // and trusting it. Without this, a shape change upstream surfaces as a raw
+  // "not iterable" TypeError from the spread, which tells the operator
+  // nothing about which store broke or why.
+  const page1 = parsed as AldiRawPage;
+  if (!Array.isArray(page1.data)) {
+    throw new SourceError("aldi", "response JSON has no `data` array, the API shape has changed");
+  }
+
+  return page1;
 }
 
 /**
@@ -127,7 +139,7 @@ export async function fetchAldi(page: PageLike, profile: AldiStoreProfile): Prom
   const deals = parseAldiPayload(merged);
 
   if (deals.length === 0 && merged.meta.pagination.totalCount === 0) {
-    throw new SourceError("aldi", "aldi returned 0 deals (possible soft bot-block)");
+    throw zeroDealSoftBlock("aldi");
   }
 
   return deals;

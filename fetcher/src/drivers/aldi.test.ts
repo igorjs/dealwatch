@@ -122,6 +122,20 @@ describe("driveAldi", () => {
     expect((error as SourceError).message).not.toContain("Access Denied");
   });
 
+  it("throws a SourceError naming the shape change when the response JSON has no data array", async () => {
+    // Arrange: valid JSON, wrong shape. Without the guard this surfaces as a
+    // raw "not iterable" TypeError from the spread.
+    const profile: AldiStoreProfile = { servicePoint: "G452", categoryKeys: ["1588161426952145"] };
+    const { page } = makeFakePage([JSON.stringify({ error: "service unavailable" })]);
+
+    // Act
+    const error = await driveAldi(page, profile).catch((e: unknown) => e);
+
+    // Assert
+    expect(error).toBeInstanceOf(SourceError);
+    expect((error as SourceError).message).toContain("the API shape has changed");
+  });
+
   it("stops at the page cap when the feed never reports a totalCount and never returns a short page", async () => {
     // Arrange: every page is full (30 items) and carries no totalCount, so
     // neither normal termination condition can ever fire.
