@@ -1,7 +1,7 @@
 import type { RawDeal } from "../../../src/types.ts";
 import { parseColesPayload } from "../../../src/sources/coles.ts";
 import type { PageLike } from "../browser.ts";
-import { SourceError } from "../errors.ts";
+import { SourceError, zeroDealSoftBlock } from "../errors.ts";
 
 /**
  * The half-price specials page. A real browser loading it renders about 900
@@ -79,7 +79,7 @@ export async function fetchColes(page: PageLike): Promise<RawDeal[]> {
   const deals = parseColesPayload(raw);
 
   if (deals.length === 0) {
-    throw new SourceError("coles", "coles returned 0 deals (possible soft bot-block)");
+    throw zeroDealSoftBlock("coles");
   }
 
   return deals;
