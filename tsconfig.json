@@ -16,5 +16,11 @@
     "verbatimModuleSyntax": true,
     "noEmit": true,
     "types": ["@cloudflare/vitest-pool-workers/types"]
-  }
+  },
+  // `fetcher/` is a separate Node project with its own tsconfig, and it
+  // imports the Worker's shared parsers with explicit `.ts` extensions
+  // (allowed there, not here). Without this exclude the Worker's own
+  // type-check pulls those files in under the wrong compiler options and
+  // fails on every one of them.
+  "exclude": ["fetcher", "node_modules"]
 }
