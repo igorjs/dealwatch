@@ -23,10 +23,6 @@ function makeFakePage(bodies: string[]): { page: PageLike; gotoUrls: string[] } 
       call += 1;
       return body;
     },
-    waitForResponse: async () => {
-      throw new Error("waitForResponse is not used by the Aldi driver");
-    },
-    on: () => {},
     close: async () => {},
   };
   return { page, gotoUrls };
