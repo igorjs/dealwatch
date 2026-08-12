@@ -1,5 +1,3 @@
-.claude/implement/
-.claude/worktrees/
 node_modules/
 .wrangler/
 dist/
@@ -10,3 +8,28 @@ dist/
 .env
 .env.*
 config.local.json
+
+# Terraform state and vars. State is the worst thing this repo could leak: it
+# stores the Cloudflare API token in PLAINTEXT, and the token can mint more
+# tokens. `infra/.gitignore` covers these too, but only while that file is
+# present, so this is the belt to its braces.
+*.tfstate
+*.tfstate.*
+*.tfvars
+!example.tfvars
+.terraform/
+.terragrunt-cache/
+
+# Store captures. Fetching these stores means handling live Akamai and
+# Incapsula session cookies, so a raw capture is a credential. Commit only
+# hand-trimmed fixtures under test/fixtures/, never a raw dump.
+*.har
+cookies.json
+capture.json
+capture-*.json
+
+# Keys and certificates
+*.pem
+*.key
+*.p12
+id_rsa*

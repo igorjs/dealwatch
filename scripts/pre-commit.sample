@@ -1,0 +1,19 @@
+#!/usr/bin/env bash
+# Blocks a commit that would introduce a secret this repo cares about.
+#
+# Local only: .git/hooks is not versioned, so this protects this clone and no
+# one else's. The CI job (.github/workflows/secret-scan.yml) is the shared
+# backstop. Install this in a fresh clone with:
+#   cp scripts/pre-commit.sample .git/hooks/pre-commit && chmod +x .git/hooks/pre-commit
+set -uo pipefail
+
+root="$(git rev-parse --show-toplevel)"
+scanner="$root/scripts/scan-secrets.sh"
+[ -x "$scanner" ] || exit 0
+
+# Only the files actually being committed, so the hook stays fast and does not
+# punish you for something already in history.
+mapfile -t staged < <(git diff --cached --name-only --diff-filter=ACM)
+[ "${#staged[@]}" -eq 0 ] && exit 0
+
+exec "$scanner" "${staged[@]}"

@@ -78,6 +78,17 @@ openssl rand -hex 32
 npx wrangler secret put API_TOKEN
 ```
 
+> **`API_TOKEN` is a value you invent here.** Nobody issues it. It exists only
+> so the Worker can tell your fetcher apart from anyone else who finds the
+> URL, which matters because this repo is public.
+>
+> It is **not** `CLOUDFLARE_API_TOKEN`. That's a real Cloudflare account
+> credential, used by Terraform in `infra/` to provision R2, and this repo
+> already has one set as an Actions secret. Never reuse it as `API_TOKEN`:
+> doing so would hand an account-level credential to the fetcher job and put
+> it in the `Authorization` header of every ingest request. Two unrelated
+> things with similar names.
+
 `NTFY_TOPIC_URL` is the full ntfy.sh topic URL matches get pushed to, e.g.
 `https://ntfy.sh/your-private-topic-name`:
 
@@ -105,9 +116,16 @@ reach these secrets.
 
 Two repository secrets must exist before the first scheduled run:
 
-- `API_TOKEN`: the same bearer token you set on the Worker in step 5.
+- `API_TOKEN`: the same bearer token you set on the Worker in step 5. The two
+  values must match exactly, and again, this is not `CLOUDFLARE_API_TOKEN`.
 - `WORKER_INGEST_URL`: the full URL of the Worker's `/ingest` route from
   step 6, e.g. `https://dealwatch.<your-subdomain>.workers.dev/ingest`.
+  Treat this as a secret too. It is the only address that accepts writes, so
+  publishing it hands an attacker half the problem.
+
+You'll see a third secret, `CLOUDFLARE_API_TOKEN`, already set on the repo.
+That one belongs to the Terraform config in `infra/` and the fetcher never
+reads it. Leave it alone.
 
 Set them with the `gh` CLI:
 
