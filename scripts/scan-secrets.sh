@@ -12,11 +12,19 @@
 # files; pass file paths to scan just those (used by the pre-commit hook).
 set -uo pipefail
 
-cd "$(git rev-parse --show-toplevel)" || exit 2
-
 if [ "$#" -gt 0 ]; then
-  files=("$@")
+  # Resolve args against the CALLER's directory before moving, or an absolute
+  # path (or one relative to a subdirectory) silently resolves to nothing and
+  # the scan reports a false all-clear.
+  files=()
+  for arg in "$@"; do
+    if [ -e "$arg" ]; then files+=("$(cd "$(dirname "$arg")" && pwd)/$(basename "$arg")")
+    else printf '%s\n' "scan-secrets: no such file: $arg" >&2; exit 2
+    fi
+  done
+  cd "$(git rev-parse --show-toplevel)" || exit 2
 else
+  cd "$(git rev-parse --show-toplevel)" || exit 2
   mapfile -t files < <(git ls-files)
 fi
 
@@ -44,7 +52,26 @@ jwt_hits=$(grep -InE 'eyJ[A-Za-z0-9_-]{15,}\.eyJ[A-Za-z0-9_-]{15,}' "${files[@]}
 key_hits=$(grep -InE -- '-----BEGIN [A-Z ]*PRIVATE KEY-----' "${files[@]}" 2>/dev/null)
 [ -n "$key_hits" ] && report "a private key looks committed" "$key_hits"
 
-# 4. Terraform state or vars. State stores the Cloudflare API token in
+# 4. A Cloudflare account id. Not a credential and not rotatable, but it
+# names your account in a public file and there is no reason to publish it.
+# Matched only in the contexts it actually appears in, never as a bare 32-hex
+# run: `wrangler types` writes a 32-hex cache hash into the generated types,
+# and matching that would cry wolf on every regeneration.
+account_hits=$(grep -InE '(CLOUDFLARE_ACCOUNT_ID|account_id|accountId)["'\'']?\s*[=:]\s*["'\'']?[0-9a-f]{32}|[0-9a-f]{32}\.r2\.cloudflarestorage\.com' "${files[@]}" 2>/dev/null)
+
+# Terraform and Terragrunt hide the same id behind neutral keys (`default =`),
+# so the context match above misses it. These file types carry no legitimate
+# 32-hex content hashes, unlike generated TypeScript, so any bare one is
+# worth stopping on.
+mapfile -t tf_files < <(printf '%s\n' "${files[@]}" | grep -E '\.(tf|hcl|tfvars)$' || true)
+if [ "${#tf_files[@]}" -gt 0 ]; then
+  tf_hex=$(grep -InE '\b[0-9a-f]{32}\b' "${tf_files[@]}" 2>/dev/null)
+  account_hits=$(printf '%s\n%s' "$account_hits" "$tf_hex" | grep -v '^$' || true)
+fi
+
+[ -n "$account_hits" ] && report "a Cloudflare account id looks committed" "$account_hits"
+
+# 5. Terraform state or vars. State stores the Cloudflare API token in
 # plaintext, and that token can mint further tokens.
 tf_hits=$(printf '%s\n' "${files[@]}" | grep -E '\.tfstate(\.[0-9]+)?$|\.tfvars$' | grep -v '^example\.tfvars$|/example\.tfvars$')
 [ -n "$tf_hits" ] && report "terraform state or vars are tracked" "$tf_hits"
