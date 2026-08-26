@@ -26,8 +26,23 @@ jobs:
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
           node-version: "20"
+      # The fetcher imports the Worker's shared parsers from ../../src, and
+      # those files import zod. Node resolves a package from the importing
+      # file's own directory, so an import made from src/ looks in the ROOT
+      # node_modules, never in fetcher/node_modules. Without this the run dies
+      # at module load with ERR_MODULE_NOT_FOUND on zod, which is what every
+      # scheduled run did between 2026-08-12 and 2026-08-22.
+      #
+      # --omit=dev keeps this cheap and narrow: the root has exactly one
+      # runtime dependency (zod), so wrangler, vitest and the workers test pool
+      # stay out of the job that holds the bearer token.
+      - run: npm ci --omit=dev
       - run: npm --prefix fetcher ci
+      # Bounded separately from the job: this step hung for 15 minutes on
+      # 2026-08-19 and was killed by the job timeout, starving the fetch it
+      # exists to set up.
       - run: npx --prefix fetcher playwright install --with-deps chromium
+        timeout-minutes: 6
       - run: npm --prefix fetcher start
         env:
           API_TOKEN: ${{ secrets.API_TOKEN }}
