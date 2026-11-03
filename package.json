@@ -9,7 +9,7 @@
     "cf-typegen": "wrangler types"
   },
   "dependencies": {
-    "zod": "4.4.3"
+    "zod": "4.6.6"
   },
   "devDependencies": {
     "wrangler": "4.118.0",
